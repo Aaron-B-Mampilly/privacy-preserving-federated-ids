@@ -1,0 +1,65 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+
+# ===== Virtual environments =====
+.venv/
+venv/
+env/
+ENV/
+
+# ===== Data (never commit datasets) =====
+data/raw/*
+data/processed/*
+data/external/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/external/.gitkeep
+*.csv
+*.pcap
+*.parquet
+
+# ===== Models / checkpoints (large, regenerable) =====
+*.pt
+*.pth
+*.ckpt
+*.h5
+checkpoints/
+models/*.bin
+
+# ===== Experiment outputs =====
+experiments/results/*
+!experiments/results/.gitkeep
+logs/*
+!logs/.gitkeep
+mlruns/
+wandb/
+
+# ===== Secrets / credentials =====
+.env
+*.pem
+*.key
+secrets.yaml
+credentials.json
+
+# ===== Jupyter =====
+.ipynb_checkpoints/
+
+# ===== OS / editor =====
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ===== Testing / coverage =====
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/

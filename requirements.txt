@@ -1,0 +1,40 @@
+# ==============================================================
+# FedPDA-IDS requirements
+# Python 3.10 recommended (see README.md for rationale)
+#
+# Grouped by the phase that introduces them so you can see why
+# each package is here. Everything is installed together now so
+# Phase 1's environment doesn't need to be rebuilt later.
+# ==============================================================
+
+# --- Core ML (Phase 4: LSTM autoencoder + classifier) ---
+torch>=2.1,<2.5
+numpy>=1.24,<2.0
+pandas>=2.0,<2.3
+scikit-learn>=1.3,<1.6
+scipy>=1.10,<1.14
+
+# --- Federated learning (Phase 5+: Flower, FedAvg, SecAgg+) ---
+flwr[simulation]>=1.8,<1.12
+
+# --- Differential privacy / RDP accounting (Phase 8) ---
+opacus>=1.4,<1.6
+
+# --- Concept drift detection: ADWIN (Phase 10) ---
+river>=0.21,<0.22
+
+# --- Config, reproducibility, experiment tracking (Phase 1+) ---
+pyyaml>=6.0,<7.0
+
+# --- Plotting / evaluation (Phase 12+) ---
+matplotlib>=3.7,<3.10
+seaborn>=0.12,<0.14
+
+# --- Monitoring (Phase 13) ---
+prometheus-client>=0.19,<0.21
+
+# --- Testing ---
+pytest>=7.4,<9.0
+
+# --- Utilities ---
+tqdm>=4.66,<5.0

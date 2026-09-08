@@ -1,0 +1,116 @@
+# ==============================================================
+# FedPDA-IDS master configuration
+#
+# This file is the single source of truth for every hyperparameter
+# fixed in the frozen design spec. Code should read values from here
+# rather than hardcoding them, so that (a) every experiment is
+# reproducible from a config + seed, and (b) changing a value is a
+# one-line, reviewable diff instead of a hunt through source files.
+# ==============================================================
+
+project:
+  name: "FedPDA-IDS"
+  seed: 42
+  seeds_for_final_runs: [42, 123, 2024]   # 3-seed mean +/- std, per spec
+
+paths:
+  data_raw: "data/raw"
+  data_processed: "data/processed"
+  data_external: "data/external"
+  logs: "logs"
+  experiments: "experiments/results"
+  checkpoints: "experiments/checkpoints"
+
+# ------------------------------------------------------------
+# Sequence construction (Phase 3)
+# ------------------------------------------------------------
+sequence:
+  window_size: 10
+  stride: 5
+
+# ------------------------------------------------------------
+# Model architecture (Phase 4) — FROZEN, do not change without approval
+# ------------------------------------------------------------
+model:
+  encoder:
+    layer1_units: 64      # LSTM(F -> 64)
+    layer2_units: 32      # LSTM(64 -> 32)
+  latent_dim: 32
+  decoder:
+    layer1_units: 64      # LSTM(32 -> 64)
+    # final LSTM layer output size = F, set at runtime from data
+  classifier_head:
+    hidden_units: 32       # Linear(32 -> 32)
+    dropout: 0.2
+    # output size = C_k, set per client at runtime
+  loss:
+    lambda_ce: 1.0          # total_loss = MSE_recon + lambda * CE
+  optimizer:
+    name: "adam"
+    learning_rate: 0.001
+  batch_size: 64
+
+# ------------------------------------------------------------
+# Federated learning (Phase 5+)
+# ------------------------------------------------------------
+federated:
+  algorithm: "fedavg"
+  aggregation: "weighted_by_dataset_size"
+  num_rounds: 100
+  local_epochs: 2
+  client_participation_fraction: 0.2
+
+  cicids2017:
+    num_clients: 40
+    clients_per_round: 8         # 20% of 40
+    dirichlet_alpha_values: [5, 0.5, 0.1]
+
+  nbaiot:
+    num_devices: 9
+    shards_per_device: 5
+    num_clients: 45              # 9 devices x 5 shards
+    ablation_num_clients: 9      # realistic 9-client comparison
+
+# ------------------------------------------------------------
+# Latent class prototypes (Phase 7)
+# ------------------------------------------------------------
+prototypes:
+  clip_bound: 1.0                       # B
+  zero_day_threshold_multiplier: 0.5    # tau = weighted mean pairwise dist * 0.5
+  # threshold is calibrated on validation data at runtime, then frozen for eval
+
+# ------------------------------------------------------------
+# Differential privacy (Phase 8) — client-level DP only
+# ------------------------------------------------------------
+privacy:
+  mechanism: "client_level_dp"          # NOT per-example DP-SGD
+  clipping: "adaptive_median"           # C_t = median of client update norms
+  noise_mechanism: "gaussian"
+  accountant: "rdp"                     # via Opacus RDPAccountant
+  delta: 1.0e-5                         # must be explicit, see README Phase 8 notes
+  epsilon_values: [.inf, 8, 3, 1, 0.5]  # privacy-utility sweep (E3)
+
+# ------------------------------------------------------------
+# Secure aggregation (Phase 9)
+# ------------------------------------------------------------
+secure_aggregation:
+  framework: "flower_secagg_plus"
+
+# ------------------------------------------------------------
+# Concept drift detection (Phase 10) — unsupervised only
+# ------------------------------------------------------------
+drift:
+  primary_detector: "adwin"
+  adwin_delta: 0.002
+  backup_detector: "psi"
+  psi_threshold: 0.25
+  psi_reference_window_size: 5000       # last N benign windows
+  retrain_trigger_consecutive_rounds: 2 # mean drift > threshold for N rounds
+
+# ------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------
+logging:
+  level: "INFO"
+  log_to_file: true
+  log_dir: "logs"

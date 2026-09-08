@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fedpda-ids"
+version = "0.1.0"
+description = "Privacy-Preserving Drift-Adaptive Federated Learning Framework for IoT Intrusion Detection"
+requires-python = ">=3.10,<3.12"
+
+[tool.setuptools.packages.find]
+where = ["src"]
