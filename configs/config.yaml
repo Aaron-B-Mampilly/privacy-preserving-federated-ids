@@ -22,6 +22,43 @@ paths:
   checkpoints: "experiments/checkpoints"
 
 # ------------------------------------------------------------
+# Data pipeline (Phase 2)
+# ------------------------------------------------------------
+data:
+  # Chronological per-source-host split fractions. Not specified by the
+  # frozen spec (which only fixes the *shape* of the split, not the
+  # ratios) -- kept here, not hardcoded, so it's a one-line, reviewable
+  # choice rather than buried in code.
+  train_fraction: 0.70
+  val_fraction: 0.15
+  test_fraction: 0.15
+
+  # Row must have this fraction of the numeric feature columns non-null
+  # after coercion to be kept; below this the row is dropped as corrupt
+  # rather than imputed (per-row NaN handling policy for Phase 2).
+  max_row_nan_fraction: 0.0   # 0.0 = drop any row with a NaN/Inf feature
+
+  # Skewness (on TRAIN split only) above which a non-negative column
+  # gets log1p-transformed.
+  log1p_skew_threshold: 1.0
+
+  cicids2017:
+    raw_dir: "data/raw/cicids2017/TrafficLabelling/TrafficLabelling"
+    processed_dir: "data/processed/cicids2017"
+    # official UNB CIC-IDS-2017 weekday file -> day label mapping
+    files:
+      "Monday-WorkingHours.pcap_ISCX.csv": "Monday"
+      "Tuesday-WorkingHours.pcap_ISCX.csv": "Tuesday"
+      "Wednesday-workingHours.pcap_ISCX.csv": "Wednesday"
+      "Thursday-WorkingHours-Morning-WebAttacks.pcap_ISCX.csv": "Thursday"
+      "Thursday-WorkingHours-Afternoon-Infilteration.pcap_ISCX.csv": "Thursday"
+      "Friday-WorkingHours-Morning.pcap_ISCX.csv": "Friday"
+      "Friday-WorkingHours-Afternoon-PortScan.pcap_ISCX.csv": "Friday"
+      "Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv": "Friday"
+    zero_day_holdout_labels: ["Infiltration", "Web Attack-Brute Force"]
+    rare_labels: ["Heartbleed", "Infiltration", "Web Attack-SQL Injection", "Bot"]
+
+# ------------------------------------------------------------
 # Sequence construction (Phase 3)
 # ------------------------------------------------------------
 sequence:
