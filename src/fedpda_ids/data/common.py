@@ -15,7 +15,7 @@ from sklearn.preprocessing import MinMaxScaler
 
 
 def coerce_numeric_and_flag_bad_rows(
-    df: pd.DataFrame, feature_cols: list[str]
+    df: pd.DataFrame, feature_cols: list[str], copy: bool = True
 ) -> tuple[pd.DataFrame, pd.Series]:
     """Force feature columns to numeric, turn +/-Inf into NaN, and return
     a boolean mask of rows that are fully clean (no NaN in any feature).
@@ -25,8 +25,14 @@ def coerce_numeric_and_flag_bad_rows(
     occasional garbled numeric fields. We do not try to impute these --
     per the reproducibility rules, we drop and report the exact count
     rather than silently guessing values that would bias later stats.
+
+    `copy=False` mutates `df` in place instead of copying it first --
+    N-BaIoT's ~7M-row, 115-feature table is large enough that an extra
+    full copy here risks exhausting memory on a 16GB machine; pass
+    `copy=False` only when the caller doesn't need the original df.
     """
-    df = df.copy()
+    if copy:
+        df = df.copy()
     for col in feature_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df[feature_cols] = df[feature_cols].replace([np.inf, -np.inf], np.nan)
@@ -36,7 +42,7 @@ def coerce_numeric_and_flag_bad_rows(
 
 def assign_chronological_split(
     df: pd.DataFrame,
-    group_col: str,
+    group_col: str | list[str],
     time_col: str,
     train_fraction: float,
     val_fraction: float,
@@ -49,6 +55,11 @@ def assign_chronological_split(
     own train/val/test tail -- which is what makes it safe to later
     build sliding-window sequences per group without a window ever
     straddling a split boundary.
+
+    `group_col` accepts a list of columns (grouping on the tuple of
+    their values) instead of forcing the caller to first materialize a
+    single concatenated string key -- avoids an extra large object-dtype
+    column on datasets where memory is already tight.
     """
     split = pd.Series(index=df.index, dtype="object")
 
@@ -69,11 +80,23 @@ def select_log1p_columns(
     train_features: pd.DataFrame, skew_threshold: float
 ) -> list[str]:
     """Pick non-negative, heavily right-skewed columns for a log1p
-    transform, decided from the TRAIN split only (leakage-safe)."""
+    transform, decided from the TRAIN split only (leakage-safe).
+
+    Skew is computed in float64 even when the column itself is float32:
+    skew's central-moment cubing step can overflow float32's ~3.4e38
+    range for columns with very large values (seen in N-BaIoT's
+    HH_jit_*_variance features, up to ~1e17), silently producing NaN --
+    which then fails `> skew_threshold` and skips log1p for exactly the
+    columns that need it most. float64 has enough headroom (~1.8e308)
+    that this doesn't happen for any value this project's data reaches.
+    Casting one column at a time is cheap (one Series, not the whole
+    feature block), so this doesn't reintroduce the memory problem the
+    float32 dtype was chosen to avoid.
+    """
     selected = []
     for col in train_features.columns:
         series = train_features[col]
-        if (series >= 0).all() and series.skew() > skew_threshold:
+        if (series >= 0).all() and series.astype("float64").skew() > skew_threshold:
             selected.append(col)
     return selected
 

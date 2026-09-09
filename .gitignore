@@ -1,3 +1,6 @@
+# ===== Downloaded third-party tools (e.g. 7-Zip, extracted for RAR support) =====
+tools/
+
 # ===== Python =====
 __pycache__/
 *.py[cod]

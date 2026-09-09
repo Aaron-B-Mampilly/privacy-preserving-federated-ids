@@ -58,6 +58,23 @@ data:
     zero_day_holdout_labels: ["Infiltration", "Web Attack-Brute Force"]
     rare_labels: ["Heartbleed", "Infiltration", "Web Attack-SQL Injection", "Bot"]
 
+  nbaiot:
+    raw_dir: "data/raw/nbaiot/extracted"
+    # Explicit device list (not a directory glob) so an unexpected extra
+    # folder never silently becomes a 10th device.
+    devices:
+      - "Danmini_Doorbell"
+      - "Ecobee_Thermostat"
+      - "Ennio_Doorbell"
+      - "Philips_B120N10_Baby_Monitor"
+      - "Provision_PT_737E_Security_Camera"
+      - "Provision_PT_838_Security_Camera"
+      - "Samsung_SNH_1011_N_Webcam"
+      - "SimpleHome_XCS7_1002_WHT_Security_Camera"
+      - "SimpleHome_XCS7_1003_WHT_Security_Camera"
+    processed_dir: "data/processed/nbaiot"
+    zero_day_holdout_labels: ["Mirai-Udpplain"]
+
 # ------------------------------------------------------------
 # Sequence construction (Phase 3)
 # ------------------------------------------------------------
