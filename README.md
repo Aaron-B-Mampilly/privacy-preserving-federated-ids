@@ -72,6 +72,17 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+### GPU (optional)
+
+`requirements.txt` installs the CPU-only PyTorch wheel by default (portable, no CUDA dependency). If you have an NVIDIA GPU, swap it for a CUDA build after the steps above:
+
+```powershell
+pip uninstall torch -y
+pip install torch==2.4.1 --index-url https://download.pytorch.org/whl/cu121
+```
+
+Training code auto-detects CUDA (`fedpda_ids.models.trainer.select_device()`) and falls back to CPU automatically — no code changes needed either way.
+
 ### Why Python 3.10
 
 PyTorch, Flower (`flwr[simulation]`), and Opacus all have mature,

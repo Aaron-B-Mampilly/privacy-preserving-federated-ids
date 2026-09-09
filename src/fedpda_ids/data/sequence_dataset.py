@@ -150,6 +150,7 @@ def build_scope_dataloaders(
     client_id,
     batch_size: int,
     num_workers: int = 0,
+    pin_memory: bool = False,
 ) -> dict:
     """Builds train/val/test DataLoaders (+ zero-day holdout dataset) for
     one scope (centralized if client_id is None, else one client), plus
@@ -183,9 +184,18 @@ def build_scope_dataloaders(
             )
 
     loaders = {
-        "train": DataLoader(datasets["train"], batch_size=batch_size, shuffle=True, num_workers=num_workers),
-        "val": DataLoader(datasets["val"], batch_size=batch_size, shuffle=False, num_workers=num_workers),
-        "test": DataLoader(datasets["test"], batch_size=batch_size, shuffle=False, num_workers=num_workers),
+        "train": DataLoader(
+            datasets["train"], batch_size=batch_size, shuffle=True,
+            num_workers=num_workers, pin_memory=pin_memory,
+        ),
+        "val": DataLoader(
+            datasets["val"], batch_size=batch_size, shuffle=False,
+            num_workers=num_workers, pin_memory=pin_memory,
+        ),
+        "test": DataLoader(
+            datasets["test"], batch_size=batch_size, shuffle=False,
+            num_workers=num_workers, pin_memory=pin_memory,
+        ),
     }
 
     return {

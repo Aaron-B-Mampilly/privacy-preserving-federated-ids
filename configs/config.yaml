@@ -94,6 +94,12 @@ data:
     # the whole device and shard boundaries don't apply.
     sequence_group_columns: ["device", "Label", "shard_id"]
     sequence_time_column: "row_order"
+    # N-BaIoT has no pre-defined "rare" classes like CICIDS2017's
+    # Heartbleed -- these are the two smallest non-zero-day classes by
+    # actual sequence count in the real main_45 build (50,839 and
+    # 52,163 out of ~1.3M non-holdout sequences; nowhere near as
+    # extreme as CICIDS2017's rarity, but the smallest present).
+    rare_labels: ["BASHLITE-Scan", "BASHLITE-Junk"]
 
 # ------------------------------------------------------------
 # Sequence construction (Phase 3)
@@ -130,7 +136,8 @@ model:
 training:
   epochs: 10
   num_workers: 0        # Windows: start at 0, see Phase 4 writeup
-  pin_memory: false     # only meaningful with CUDA; set true if device is cuda
+  # pin_memory is NOT set here -- train_baseline.py derives it from the
+  # actually-selected device (True only if CUDA), never a static flag.
   checkpoint_dir: "experiments/checkpoints"
   results_dir: "experiments/results"
   # A local client's model is only trained if it clears both bars --
