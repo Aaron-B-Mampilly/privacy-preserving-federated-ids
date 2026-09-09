@@ -125,6 +125,22 @@ model:
   batch_size: 64
 
 # ------------------------------------------------------------
+# Phase 4: centralized/local baseline training
+# ------------------------------------------------------------
+training:
+  epochs: 10
+  num_workers: 0        # Windows: start at 0, see Phase 4 writeup
+  pin_memory: false     # only meaningful with CUDA; set true if device is cuda
+  checkpoint_dir: "experiments/checkpoints"
+  results_dir: "experiments/results"
+  # A local client's model is only trained if it clears both bars --
+  # otherwise it's skipped with an explicit log entry, never trained on
+  # a degenerate single-class set, never given fabricated samples.
+  local_training:
+    min_train_sequences: 10
+    min_train_classes: 2
+
+# ------------------------------------------------------------
 # Federated learning (Phase 5+)
 # ------------------------------------------------------------
 federated:
