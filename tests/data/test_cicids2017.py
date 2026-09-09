@@ -13,6 +13,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from fedpda_ids.data.common import assert_no_chronological_leakage
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REAL_METADATA_PATH = REPO_ROOT / "data" / "processed" / "cicids2017" / "metadata.json"
 
@@ -94,16 +96,7 @@ def test_non_holdout_rows_have_valid_client_id(processed_cicids):
 def test_no_chronological_leakage_within_any_host(processed_cicids):
     df, _ = processed_cicids
     non_holdout = df[~df["is_zero_day_holdout"]]
-
-    for _, group in non_holdout.groupby("Source IP"):
-        train_ts = group.loc[group["temporal_split"] == "train", "Timestamp"]
-        val_ts = group.loc[group["temporal_split"] == "val", "Timestamp"]
-        test_ts = group.loc[group["temporal_split"] == "test", "Timestamp"]
-
-        if len(train_ts) and len(val_ts):
-            assert train_ts.max() <= val_ts.min()
-        if len(val_ts) and len(test_ts):
-            assert val_ts.max() <= test_ts.min()
+    assert_no_chronological_leakage(non_holdout, group_col="Source IP", time_col="Timestamp")
 
 
 # ---------------------------------------------------------------------

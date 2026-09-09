@@ -166,3 +166,26 @@ def dirichlet_partition_with_splits(
                 client_id[group] = cid
 
     return client_id
+
+
+def assert_no_chronological_leakage(
+    df: pd.DataFrame, group_col: str | list[str], time_col: str, split_col: str = "temporal_split"
+) -> None:
+    """Raise AssertionError if any group has a train row later than a
+    val row, or a val row later than a test row.
+
+    This is the one property every processed dataset in this project
+    must satisfy before Phase 3 builds sequences from it -- used by
+    both datasets' test suites (Part B, Part D) and by the Part E
+    cross-dataset check, so the leakage definition itself only exists
+    once instead of two near-identical copies drifting apart.
+    """
+    for _, group in df.groupby(group_col):
+        train_t = group.loc[group[split_col] == "train", time_col]
+        val_t = group.loc[group[split_col] == "val", time_col]
+        test_t = group.loc[group[split_col] == "test", time_col]
+
+        if len(train_t) and len(val_t):
+            assert train_t.max() <= val_t.min(), "train/val leakage detected"
+        if len(val_t) and len(test_t):
+            assert val_t.max() <= test_t.min(), "val/test leakage detected"

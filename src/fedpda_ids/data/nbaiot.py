@@ -38,7 +38,7 @@ BENIGN_FILENAME = "benign_traffic.csv"
 GAFGYT_SUBDIR = "gafgyt_attacks"
 MIRAI_SUBDIR = "mirai_attacks"
 
-BOOKKEEPING_COLUMNS = ["device", "label", "row_order"]
+BOOKKEEPING_COLUMNS = ["device", "Label", "row_order"]
 
 
 def _load_device(device_dir: Path, device_name: str) -> pd.DataFrame:
@@ -57,7 +57,7 @@ def _load_device(device_dir: Path, device_name: str) -> pd.DataFrame:
     if benign_path.exists():
         df = pd.read_csv(benign_path, encoding="latin1", low_memory=False, dtype=np.float32)
         df["device"] = device_name
-        df["label"] = "BENIGN"
+        df["Label"] = "BENIGN"
         df["row_order"] = np.arange(len(df), dtype=np.int32)
         frames.append(df)
 
@@ -68,7 +68,7 @@ def _load_device(device_dir: Path, device_name: str) -> pd.DataFrame:
         for csv_path in sorted(attack_dir.glob("*.csv")):
             df = pd.read_csv(csv_path, encoding="latin1", low_memory=False, dtype=np.float32)
             df["device"] = device_name
-            df["label"] = f"{prefix}-{csv_path.stem.capitalize()}"
+            df["Label"] = f"{prefix}-{csv_path.stem.capitalize()}"
             df["row_order"] = np.arange(len(df), dtype=np.int32)
             frames.append(df)
 
@@ -107,7 +107,7 @@ def _assign_shards(df: pd.DataFrame, shards_per_device: int) -> pd.Series:
     # so shard_id/client_id columns don't end up as float in the output.
     shard = pd.Series(index=df.index, dtype="int64")
 
-    for _, group_idx in df.groupby(["device", "label"]).groups.items():
+    for _, group_idx in df.groupby(["device", "Label"]).groups.items():
         ordered = df.loc[group_idx, "row_order"].sort_values().index
         chunks = np.array_split(ordered, shards_per_device)
         for shard_id, chunk in enumerate(chunks):
@@ -154,7 +154,7 @@ def preprocess_nbaiot(
     del clean_mask
     gc.collect()
 
-    df["is_zero_day_holdout"] = df["label"].isin(zero_day_holdout_labels)
+    df["is_zero_day_holdout"] = df["Label"].isin(zero_day_holdout_labels)
 
     device_index = {name: i for i, name in enumerate(devices)}
     df["device_index"] = df["device"].map(device_index).astype(np.int32)
@@ -178,8 +178,8 @@ def preprocess_nbaiot(
     df["temporal_split"] = "zero_day_holdout"
     non_holdout_mask = ~df["is_zero_day_holdout"]
     split_result = assign_chronological_split(
-        df.loc[non_holdout_mask, ["device", "label", "shard_id", "row_order"]],
-        group_col=["device", "label", "shard_id"],
+        df.loc[non_holdout_mask, ["device", "Label", "shard_id", "row_order"]],
+        group_col=["device", "Label", "shard_id"],
         time_col="row_order",
         train_fraction=train_fraction,
         val_fraction=val_fraction,
@@ -249,7 +249,7 @@ def preprocess_nbaiot(
         "num_clients_9": len(devices),
         "zero_day_holdout_labels": zero_day_holdout_labels,
         "zero_day_holdout_row_count": int(df["is_zero_day_holdout"].sum()),
-        "label_counts": df["label"].value_counts().to_dict(),
+        "label_counts": df["Label"].value_counts().to_dict(),
         "device_counts": df["device"].value_counts().to_dict(),
         "split_counts": df["temporal_split"].value_counts().to_dict(),
         "train_fraction": train_fraction,

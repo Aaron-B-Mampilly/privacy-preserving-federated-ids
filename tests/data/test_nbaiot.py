@@ -14,6 +14,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from fedpda_ids.data.common import assert_no_chronological_leakage
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REAL_METADATA_PATH = REPO_ROOT / "data" / "processed" / "nbaiot" / "metadata.json"
 
@@ -58,7 +60,7 @@ def test_zero_day_rows_excluded_from_every_client(processed_nbaiot):
     assert len(holdout) > 0
     assert (holdout["client_id_45"] == -1).all()
     assert (holdout["client_id_9"] == -1).all()
-    assert (holdout["label"] == ZERO_DAY_LABEL).all()
+    assert (holdout["Label"] == ZERO_DAY_LABEL).all()
 
 
 def test_non_holdout_rows_have_valid_client_id(processed_nbaiot):
@@ -73,7 +75,7 @@ def test_device_without_mirai_has_no_mirai_labels(processed_nbaiot):
     which have no Mirai data at all -- this must not silently produce
     fabricated Mirai rows or crash the pipeline."""
     df, _ = processed_nbaiot
-    device_b_labels = set(df.loc[df["device"] == "Device_B", "label"].unique())
+    device_b_labels = set(df.loc[df["device"] == "Device_B", "Label"].unique())
     assert not any(label.startswith("Mirai") for label in device_b_labels)
 
 
@@ -85,16 +87,9 @@ def test_device_without_mirai_has_no_mirai_labels(processed_nbaiot):
 def test_no_chronological_leakage_within_any_shard(processed_nbaiot):
     df, _ = processed_nbaiot
     non_holdout = df[~df["is_zero_day_holdout"]]
-
-    for _, group in non_holdout.groupby(["device", "label", "shard_id"]):
-        train_ro = group.loc[group["temporal_split"] == "train", "row_order"]
-        val_ro = group.loc[group["temporal_split"] == "val", "row_order"]
-        test_ro = group.loc[group["temporal_split"] == "test", "row_order"]
-
-        if len(train_ro) and len(val_ro):
-            assert train_ro.max() <= val_ro.min()
-        if len(val_ro) and len(test_ro):
-            assert val_ro.max() <= test_ro.min()
+    assert_no_chronological_leakage(
+        non_holdout, group_col=["device", "Label", "shard_id"], time_col="row_order"
+    )
 
 
 def test_shards_are_chronologically_ordered(processed_nbaiot):
@@ -104,7 +99,7 @@ def test_shards_are_chronologically_ordered(processed_nbaiot):
     df, _ = processed_nbaiot
     non_holdout = df[~df["is_zero_day_holdout"]]
 
-    for _, group in non_holdout.groupby(["device", "label"]):
+    for _, group in non_holdout.groupby(["device", "Label"]):
         for shard_id in sorted(group["shard_id"].unique())[:-1]:
             this_shard = group.loc[group["shard_id"] == shard_id, "row_order"]
             next_shard = group.loc[group["shard_id"] == shard_id + 1, "row_order"]
