@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 
 import numpy as np
@@ -57,6 +58,7 @@ def build_sequences(
     window_size: int,
     stride: int,
     output_dir: str | Path,
+    storage_dtype: type = np.float32,
 ) -> dict:
     """Build (window_size, F) sequences from df, grouped by
     (base_group_cols + ["temporal_split", client_id_col]) and sorted by
@@ -67,6 +69,15 @@ def build_sequences(
     GB, and this machine's Phase 2 experience showed that an extra
     full-size copy at the wrong moment is the difference between
     fitting in 16GB and not.
+
+    `storage_dtype` defaults to float32 but can be set to float16 to
+    halve disk usage under real storage pressure (this machine's C:
+    drive hit 96%+ full during Phase 3). Values are already MinMax-
+    scaled to roughly [0,1] by Phase 2, so float16's ~3 decimal digits
+    of precision costs nothing that matters here; whatever loads X.npy
+    for training should upcast to float32 first, since that's what the
+    frozen architecture expects -- this is a storage-layer choice only,
+    not a model precision change.
 
     Returns a summary dict (also written to output_dir/summary.json).
     Sequence-level metadata (label, client id, split, group key,
@@ -112,21 +123,51 @@ def build_sequences(
             json.dump(summary, f, indent=2, default=str)
         return summary
 
-    X = np.lib.format.open_memmap(
-        x_path, mode="w+", dtype=np.float32, shape=(total_sequences, window_size, num_features)
-    )
+    # Retry the memmap allocation a few times: on this machine, disk free
+    # space has been observed to fluctuate in real time (something else
+    # on the system transiently consumes space), causing "No space left
+    # on device" errors that then succeed if retried moments later even
+    # though `df`/Get-PSDrive reported unchanged free space throughout.
+    # Not a substitute for having genuine headroom -- just resilience
+    # against a few-second dip.
+    last_error: OSError | None = None
+    X = None
+    for attempt in range(5):
+        try:
+            X = np.lib.format.open_memmap(
+                x_path, mode="w+", dtype=storage_dtype, shape=(total_sequences, window_size, num_features)
+            )
+            break
+        except OSError as e:
+            last_error = e
+            logger.warning(
+                "Attempt %d/5 to allocate %s failed (%s); retrying in %ds",
+                attempt + 1, x_path, e, 2 ** attempt,
+            )
+            time.sleep(2**attempt)
+    if X is None:
+        raise RuntimeError(f"Failed to allocate {x_path} after 5 attempts") from last_error
 
     metadata_rows = []
     offset = 0
 
-    for group_key, group_df in grouped:
-        n = len(group_df)
+    # NOTE: iterating `grouped` directly (`for key, group_df in grouped:`)
+    # triggers pandas' internal _sorted_data step, which gathers the
+    # ENTIRE dataframe into one group-contiguous block before yielding
+    # the first group -- effectively a full extra copy of the feature
+    # block. On N-BaIoT's ~3GB (float32) table this alone caused a
+    # numpy.core._exceptions._ArrayMemoryError. `.groups.items()` gives
+    # {key: row_index} cheaply (no data movement), and `.loc[]` per key
+    # extracts only that small group -- the same pattern nbaiot.py's
+    # _assign_shards() already uses successfully on this dataset.
+    for group_key, group_index in grouped.groups.items():
+        n = len(group_index)
         n_windows = compute_window_count(n, window_size, stride)
         if n_windows == 0:
             continue
 
-        ordered = group_df.sort_values(time_col)
-        feat_values = ordered[feature_cols].to_numpy(dtype=np.float32)
+        ordered = df.loc[group_index].sort_values(time_col)
+        feat_values = ordered[feature_cols].to_numpy(dtype=storage_dtype)
         label_values = ordered[label_col].to_numpy()
         time_values = ordered[time_col].to_numpy()
 
@@ -167,6 +208,7 @@ def build_sequences(
         "window_size": window_size,
         "stride": stride,
         "num_features": num_features,
+        "storage_dtype": np.dtype(storage_dtype).name,
         "group_cols": group_cols,
         "client_id_col": client_id_col,
         "num_eligible_groups": num_eligible_groups,

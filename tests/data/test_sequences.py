@@ -326,3 +326,36 @@ def test_literal_worked_example_produces_exact_expected_windows():
 )
 def test_compute_window_count(n_rows, window_size, stride, expected):
     assert compute_window_count(n_rows, window_size, stride) == expected
+
+
+# ---------------------------------------------------------------------
+# storage_dtype (added under real disk-space pressure -- see Phase 3
+# writeup: N-BaIoT's sequence tensor didn't fit at float32 on this
+# machine's nearly-full drive)
+# ---------------------------------------------------------------------
+
+
+def test_storage_dtype_float16_matches_float32_values(tmp_path, synthetic_df):
+    kwargs = dict(
+        df=synthetic_df,
+        feature_cols=FEATURE_COLS,
+        base_group_cols=["host"],
+        time_col="time",
+        label_col="Label",
+        client_id_col="client_id",
+        window_size=10,
+        stride=5,
+    )
+    summary_f32 = build_sequences(output_dir=tmp_path / "f32", storage_dtype=np.float32, **kwargs)
+    summary_f16 = build_sequences(output_dir=tmp_path / "f16", storage_dtype=np.float16, **kwargs)
+
+    X_f32 = np.load(tmp_path / "f32" / "X.npy")
+    X_f16 = np.load(tmp_path / "f16" / "X.npy")
+
+    assert X_f32.dtype == np.float32
+    assert X_f16.dtype == np.float16
+    assert summary_f32["total_sequences"] == summary_f16["total_sequences"]
+    # float16 only represents integers exactly up to 2048; value_x10
+    # reaches 4150, so this is a precision check (tight relative
+    # tolerance), not an exact-match check.
+    np.testing.assert_allclose(X_f32, X_f16.astype(np.float32), rtol=1e-2)
