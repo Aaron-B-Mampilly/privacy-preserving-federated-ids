@@ -58,9 +58,13 @@ data:
     zero_day_holdout_labels: ["Infiltration", "Web Attack-Brute Force"]
     rare_labels: ["Heartbleed", "Infiltration", "Web Attack-SQL Injection", "Bot"]
     # Phase 3 groups rows into sequences per these columns, sorted by the
-    # time column, within a client's own assigned rows. Declared here
-    # (Part E) so Phase 3 reads this generically instead of hardcoding
-    # per-dataset grouping logic.
+    # time column. NOTE (Phase 3 Part A finding): these are the base
+    # entity-grouping columns only -- the sequence builder additionally
+    # groups by temporal_split and the active client_id_alpha{X} column
+    # (client assignment is row-level Dirichlet, not host-level, so a
+    # single host's rows can span many different clients; grouping by
+    # host alone would build sequences that cross client and train/val/
+    # test boundaries). See sequences.py.
     sequence_group_columns: ["Source IP"]
     sequence_time_column: "Timestamp"
 
@@ -81,7 +85,13 @@ data:
     processed_dir: "data/processed/nbaiot"
     zero_day_holdout_labels: ["Mirai-Udpplain"]
     # N-BaIoT has no real timestamp -- row order within a (device, Label,
-    # shard) group already IS chronological order (see nbaiot.py).
+    # shard) group already IS chronological order (see nbaiot.py). This
+    # is the grouping for the 45-CLIENT scheme (client_id_45 is already
+    # a deterministic function of device+shard_id, so this also
+    # respects client boundaries with no extra column needed). The
+    # 9-CLIENT ablation drops shard_id from this list -- see sequences.py
+    # / scripts/build_sequences_nbaiot.py -- since a "client" there is
+    # the whole device and shard boundaries don't apply.
     sequence_group_columns: ["device", "Label", "shard_id"]
     sequence_time_column: "row_order"
 
