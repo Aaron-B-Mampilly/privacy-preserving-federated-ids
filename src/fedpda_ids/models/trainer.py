@@ -180,3 +180,105 @@ def train_model(
         "best_checkpoint": str(checkpoint_dir / f"{run_name}_best.pt"),
         "last_checkpoint": str(checkpoint_dir / f"{run_name}_last.pt"),
     }
+
+
+# ---------------------------------------------------------------------
+# Classification-only variants (Phase 4 Part J: LSTM-vs-DNN ablation).
+# The DNN baseline has no reconstruction term (see dnn_baseline.py
+# docstring), so these mirror train_one_epoch/evaluate/train_model but
+# drop the MSE component -- best-checkpoint criterion here is lowest
+# validation CROSS-ENTROPY loss (the DNN's only loss term).
+# ---------------------------------------------------------------------
+
+
+def train_one_epoch_classifier_only(
+    model: torch.nn.Module, loader: DataLoader, optimizer: torch.optim.Optimizer, device: torch.device
+) -> dict:
+    model.train()
+    loss_sum = 0.0
+    n_batches = 0
+    for x, y in loader:
+        x, y = x.to(device), y.to(device)
+        optimizer.zero_grad()
+        logits = model(x)
+        loss = torch.nn.functional.cross_entropy(logits, y)
+        loss.backward()
+        optimizer.step()
+        loss_sum += loss.item()
+        n_batches += 1
+    return {"loss": loss_sum / max(n_batches, 1)}
+
+
+@torch.no_grad()
+def evaluate_classifier_only(
+    model: torch.nn.Module, loader: DataLoader, device: torch.device, index_to_label: dict[int, str]
+) -> dict:
+    model.eval()
+    loss_sum = 0.0
+    n_batches = 0
+    all_y_true, all_y_pred = [], []
+    for x, y in loader:
+        x, y = x.to(device), y.to(device)
+        logits = model(x)
+        loss_sum += torch.nn.functional.cross_entropy(logits, y).item()
+        n_batches += 1
+        all_y_true.append(y.cpu().numpy())
+        all_y_pred.append(logits.argmax(dim=1).cpu().numpy())
+
+    y_true = np.concatenate(all_y_true) if all_y_true else np.array([], dtype=np.int64)
+    y_pred = np.concatenate(all_y_pred) if all_y_pred else np.array([], dtype=np.int64)
+    metrics = compute_classification_metrics(y_true, y_pred, index_to_label)
+    metrics["loss"] = loss_sum / max(n_batches, 1)
+    return metrics
+
+
+def train_model_classifier_only(
+    model: torch.nn.Module,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    epochs: int,
+    index_to_label: dict[int, str],
+    checkpoint_dir: str | Path,
+    run_name: str,
+    run_config: dict[str, Any],
+) -> dict:
+    checkpoint_dir = Path(checkpoint_dir)
+    best_val_loss = float("inf")
+    best_epoch = -1
+    history: dict[str, list[dict]] = {"train": [], "val": []}
+
+    for epoch in range(1, epochs + 1):
+        train_metrics = train_one_epoch_classifier_only(model, train_loader, optimizer, device)
+        val_metrics = evaluate_classifier_only(model, val_loader, device, index_to_label)
+
+        history["train"].append({"epoch": epoch, **train_metrics})
+        history["val"].append({"epoch": epoch, **val_metrics})
+
+        logger.info(
+            "[%s] epoch %d/%d train_loss=%.4f val_loss=%.4f val_macro_f1=%.4f val_acc=%.4f",
+            run_name, epoch, epochs, train_metrics["loss"], val_metrics["loss"],
+            val_metrics["macro_f1"], val_metrics["accuracy"],
+        )
+
+        if val_metrics["loss"] < best_val_loss:
+            best_val_loss = val_metrics["loss"]
+            best_epoch = epoch
+            save_checkpoint(
+                checkpoint_dir / f"{run_name}_best.pt", model, optimizer, epoch,
+                run_config, train_metrics, val_metrics,
+            )
+
+    save_checkpoint(
+        checkpoint_dir / f"{run_name}_last.pt", model, optimizer, epochs,
+        run_config, history["train"][-1], history["val"][-1],
+    )
+
+    return {
+        "history": history,
+        "best_epoch": best_epoch,
+        "best_val_loss": best_val_loss,
+        "best_checkpoint": str(checkpoint_dir / f"{run_name}_best.pt"),
+        "last_checkpoint": str(checkpoint_dir / f"{run_name}_last.pt"),
+    }
