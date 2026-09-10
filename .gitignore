@@ -39,6 +39,7 @@ models/*.bin
 # ===== Experiment outputs =====
 experiments/results/*
 !experiments/results/.gitkeep
+experiments/audit/*
 logs/*
 !logs/.gitkeep
 mlruns/
