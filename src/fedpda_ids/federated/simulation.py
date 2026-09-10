@@ -127,6 +127,7 @@ def run_fedavg_simulation(
     run_name: str,
     seed: int,
     num_workers: int = 0,
+    max_cpus_per_client: int = 4,
 ) -> dict:
     seq_dir = Path(seq_dir)
 
@@ -196,7 +197,17 @@ def run_fedavg_simulation(
         num_clients=len(pool),
         config=fl.server.ServerConfig(num_rounds=num_rounds),
         strategy=strategy,
-        client_resources={"num_cpus": 1, "num_gpus": 0.0},
+        # num_cpus=1 per client lets Ray run one actor per logical CPU
+        # (16 here) -- each independently imports this venv's CUDA-
+        # enabled torch, which eagerly loads several hundred MB of CUDA
+        # runtime DLLs on import regardless of whether GPU is used.
+        # 16 concurrent copies of that exhausted this machine's paging
+        # file mid-run (a real client task failure, not hypothetical --
+        # see Phase 5 writeup). Asking for more CPUs per client forces
+        # Ray to run fewer actors concurrently, capping how many
+        # torch-loaded processes exist at once. Phase 4 already found
+        # GPU gives this small model no speedup, so this costs nothing.
+        client_resources={"num_cpus": max_cpus_per_client, "num_gpus": 0.0},
     )
 
     # Final test evaluation, exactly once, using the best-val-loss round's weights.
