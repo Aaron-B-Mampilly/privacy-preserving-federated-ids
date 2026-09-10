@@ -151,6 +151,7 @@ def build_scope_dataloaders(
     batch_size: int,
     num_workers: int = 0,
     pin_memory: bool = False,
+    label_to_index: dict[str, int] | None = None,
 ) -> dict:
     """Builds train/val/test DataLoaders (+ zero-day holdout dataset) for
     one scope (centralized if client_id is None, else one client), plus
@@ -161,10 +162,17 @@ def build_scope_dataloaders(
     shared across the whole dataset, evaluated once per experiment
     rather than per client -- callers typically build it once at
     centralized scope and reuse it.
+
+    `label_to_index`, if given, OVERRIDES the default "derive classes
+    from this scope's own train split" behavior (Phase 4's policy) --
+    used by Phase 5's FedAvg, where every client must share one global
+    class vocabulary for the classifier head to be weight-averageable
+    at all (see federated/ module docstring for why this isn't optional).
     """
     seq_dir = Path(seq_dir)
-    train_labels = get_scope_train_labels(seq_dir, client_id_col, client_id)
-    label_to_index = build_label_index(train_labels)
+    if label_to_index is None:
+        train_labels = get_scope_train_labels(seq_dir, client_id_col, client_id)
+        label_to_index = build_label_index(train_labels)
 
     datasets = {
         split: SequenceDataset(seq_dir, split, label_to_index, client_id_col, client_id)
