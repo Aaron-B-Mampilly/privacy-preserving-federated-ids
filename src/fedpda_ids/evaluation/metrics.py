@@ -75,3 +75,43 @@ def extract_rare_class_metrics(metrics: dict, rare_labels: list[str]) -> dict:
         else:
             result[label] = {"status": "not_in_scope_classes"}
     return result
+
+
+def compute_zero_day_metrics(zero_day_predictions: np.ndarray, known_class_predictions: np.ndarray) -> dict:
+    """Phase 7 (E4): does the NEW-CLASS mechanism actually work?
+
+    `zero_day_predictions`: predictions (from classify_batch_with_prototypes,
+    -1 = NEW CLASS) made on TRUE zero-day examples -- detection rate is
+    how often these correctly come back -1.
+    `known_class_predictions`: predictions made on TRUE known-class
+    examples (val/test, never zero-day) -- false positive rate is how
+    often these are WRONGLY flagged -1 (a known class mistaken for new).
+    """
+    n_zero_day = len(zero_day_predictions)
+    n_known = len(known_class_predictions)
+
+    detected = int((zero_day_predictions == -1).sum()) if n_zero_day else 0
+    false_positives = int((known_class_predictions == -1).sum()) if n_known else 0
+
+    detection_rate = detected / n_zero_day if n_zero_day else float("nan")
+    false_positive_rate = false_positives / n_known if n_known else float("nan")
+
+    # precision/recall/F1 framed as a binary "is this novel?" task
+    true_positives = detected
+    precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) else float("nan")
+    recall = detection_rate
+    f1 = (
+        2 * precision * recall / (precision + recall)
+        if (precision == precision and recall == recall and (precision + recall) > 0)  # NaN-safe
+        else float("nan")
+    )
+
+    return {
+        "num_zero_day_samples": n_zero_day,
+        "num_known_samples": n_known,
+        "zero_day_detection_rate": detection_rate,
+        "false_positive_rate": false_positive_rate,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+    }
