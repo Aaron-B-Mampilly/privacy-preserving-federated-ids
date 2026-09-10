@@ -1,23 +1,41 @@
-"""Phase 5: the Flower client wrapping the Phase 4 model + training code.
+"""Phase 5/6: the Flower client wrapping the Phase 4 model + training code.
 
-FedAvg averages weight TENSORS across clients, which is only valid if
-every participating client's model has IDENTICAL architecture --
-including the classifier's output size. Phase 4's local-only baseline
-deliberately let each client have its own class count C_k (correct
-there, since local models were never aggregated); Phase 5 has no
-personalization yet (that's Phase 6 -- the whole model, encoder +
-decoder + classifier, is FedAveraged together), so every client here
-MUST share one global class vocabulary. See
-sequence_dataset.build_scope_dataloaders's `label_to_index` override
-and federated/simulation.py, which builds that shared vocabulary once
-and hands it to every client.
+Phase 5 (vanilla FedAvg): FedAvg averages weight TENSORS across
+clients, which is only valid if every participating client's model
+has IDENTICAL architecture -- including the classifier's output size.
+Phase 4's local-only baseline deliberately let each client have its
+own class count C_k (correct there, since local models were never
+aggregated); Phase 5 has no personalization, so every client shares
+one global class vocabulary (see sequence_dataset's label_to_index
+override).
+
+Phase 6 (personalization): ONLY encoder+decoder ("shared") parameters
+travel to/from the server; the classifier head ("local") never does.
+This raises a real problem Phase 5 didn't have: Flower's simulation
+clients are EPHEMERAL -- client_fn constructs a brand-new model
+(random init) on every single invocation, and Flower's own docs say
+client instances "should not attempt to carry state over method
+invocations." Ray's actor pool doesn't guarantee the same client_id
+lands on the same worker twice, so an in-memory cache would silently
+fail. The only robust fix is disk-based persistence: each client's
+local head is saved to `{checkpoint_dir}/personalized_heads/{run_name}
+/client_{id}.pt` at the end of every fit() call and reloaded at
+client construction time -- correct regardless of which process
+handles which call, and regardless of whether Flower gives fit() and
+evaluate() the same or different underlying Python objects within one
+round (verified this is NOT guaranteed).
 
 Local epochs use a FRESH optimizer each round (no momentum state
 carried across rounds) -- this is standard FedAvg: only model weights
-travel between server and client, never optimizer state.
+travel between server and client, never optimizer state. (Phase 6:
+the optimizer still updates ALL parameters, including the local head,
+during local training -- only what's COMMUNICATED is restricted to
+the shared subset.)
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -25,6 +43,8 @@ from flwr.client import Client, NumPyClient
 from torch.utils.data import DataLoader
 
 from fedpda_ids.models.trainer import evaluate, train_one_epoch
+
+SHARED_PREFIXES = ("encoder.", "decoder.")
 
 
 def get_model_parameters(model: torch.nn.Module) -> list[np.ndarray]:
@@ -42,11 +62,57 @@ def set_model_parameters(model: torch.nn.Module, parameters: list[np.ndarray]) -
     model.load_state_dict(state_dict, strict=True)
 
 
+def get_shared_parameter_keys(model: torch.nn.Module) -> list[str]:
+    return [k for k in model.state_dict().keys() if k.startswith(SHARED_PREFIXES)]
+
+
+def get_shared_parameters(model: torch.nn.Module) -> list[np.ndarray]:
+    state_dict = model.state_dict()
+    return [state_dict[k].detach().cpu().numpy().copy() for k in get_shared_parameter_keys(model)]
+
+
+def set_shared_parameters(model: torch.nn.Module, parameters: list[np.ndarray]) -> None:
+    """Merges ONLY the encoder/decoder tensors into the model --
+    strict=False so the (absent) classifier.* keys are left exactly as
+    they already are (the client's own locally-trained head)."""
+    keys = get_shared_parameter_keys(model)
+    assert len(keys) == len(parameters), f"expected {len(keys)} shared tensors, got {len(parameters)}"
+    partial_state = {k: torch.tensor(v) for k, v in zip(keys, parameters)}
+    model.load_state_dict(partial_state, strict=False)
+
+
+def local_head_path(checkpoint_dir: str | Path, run_name: str, client_id: int) -> Path:
+    return Path(checkpoint_dir) / "personalized_heads" / run_name / f"client_{client_id}.pt"
+
+
+def load_local_head(model: torch.nn.Module, path: Path) -> bool:
+    """Returns True if a persisted head was found and loaded, False if
+    this client has never been sampled before (model keeps whatever
+    fresh random classifier weights it was constructed with)."""
+    if not path.exists():
+        return False
+    classifier_state = torch.load(path, map_location="cpu", weights_only=True)
+    model.load_state_dict(classifier_state, strict=False)
+    return True
+
+
+def save_local_head(model: torch.nn.Module, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    classifier_state = {k: v for k, v in model.state_dict().items() if k.startswith("classifier.")}
+    torch.save(classifier_state, path)
+
+
 class FlowerLSTMClient(NumPyClient):
     """One federated client. Ephemeral per Flower's simulation model --
     holds a reference to this client's own train/val DataLoaders (never
     another client's, enforced by how simulation.py constructs them)
     and trains/evaluates whatever global weights it's handed each round.
+
+    `personalized`: when True, only encoder/decoder parameters are
+    exchanged with the server (Phase 6); the classifier head is
+    persisted to `head_path` across rounds instead. When False (Phase
+    5 behavior, default), the full model is exchanged, unchanged from
+    before.
     """
 
     def __init__(
@@ -60,6 +126,8 @@ class FlowerLSTMClient(NumPyClient):
         lambda_ce: float,
         learning_rate: float,
         index_to_label: dict[int, str],
+        personalized: bool = False,
+        head_path: Path | None = None,
     ):
         self.client_id = client_id
         self.model = model
@@ -70,28 +138,54 @@ class FlowerLSTMClient(NumPyClient):
         self.lambda_ce = lambda_ce
         self.learning_rate = learning_rate
         self.index_to_label = index_to_label
+        self.personalized = personalized
+        self.head_path = head_path
+
+        if self.personalized:
+            assert self.head_path is not None, "personalized=True requires head_path"
+            load_local_head(self.model, self.head_path)
 
     def get_parameters(self, config) -> list[np.ndarray]:
+        if self.personalized:
+            return get_shared_parameters(self.model)
         return get_model_parameters(self.model)
 
     def fit(self, parameters: list[np.ndarray], config) -> tuple[list[np.ndarray], int, dict]:
-        set_model_parameters(self.model, parameters)
+        if self.personalized:
+            set_shared_parameters(self.model, parameters)
+        else:
+            set_model_parameters(self.model, parameters)
+
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
         last_metrics = {}
         for _ in range(self.local_epochs):
             last_metrics = train_one_epoch(self.model, self.train_loader, optimizer, self.device, self.lambda_ce)
 
+        if self.personalized:
+            save_local_head(self.model, self.head_path)
+            returned_params = get_shared_parameters(self.model)
+        else:
+            returned_params = get_model_parameters(self.model)
+
         num_examples = len(self.train_loader.dataset)
-        return get_model_parameters(self.model), num_examples, {"train_loss": last_metrics.get("loss", float("nan"))}
+        return returned_params, num_examples, {"train_loss": last_metrics.get("loss", float("nan"))}
 
     def evaluate(self, parameters: list[np.ndarray], config) -> tuple[float, int, dict]:
-        set_model_parameters(self.model, parameters)
+        if self.personalized:
+            set_shared_parameters(self.model, parameters)
+            # local head was already loaded in __init__ (this client
+            # instance's own most recent persisted head, whether from
+            # this round's fit or an earlier one)
+        else:
+            set_model_parameters(self.model, parameters)
+
         metrics = evaluate(self.model, self.val_loader, self.device, self.lambda_ce, self.index_to_label)
         num_examples = len(self.val_loader.dataset)
         return float(metrics["loss"]), num_examples, {
             "accuracy": metrics["accuracy"],
             "macro_f1": metrics["macro_f1"],
+            "mse": metrics["mse"],
         }
 
 
