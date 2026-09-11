@@ -129,6 +129,14 @@ def test_aggregate_prototypes_handles_classes_present_in_only_some_clients():
     assert np.allclose(aggregated[1], [5.0])
 
 
+def test_aggregate_prototypes_return_support_gives_total_counts():
+    client_a = {0: (np.array([0.0, 0.0]), 1)}
+    client_b = {0: (np.array([4.0, 0.0]), 3)}
+    aggregated, support = aggregate_prototypes([client_a, client_b], return_support=True)
+    assert np.allclose(aggregated[0], [3.0, 0.0])
+    assert support == {0: 4}
+
+
 # ---------------------------------------------------------------------
 # calibrate_threshold
 # ---------------------------------------------------------------------
@@ -175,6 +183,46 @@ def test_classify_batch_matches_single_example_classify():
 
     for i in range(len(batch)):
         single_label, single_dist = classify_with_prototypes(batch[i], prototypes, threshold)
+        expected = -1 if single_label is None else single_label
+        assert preds[i] == expected
+        assert np.isclose(dists[i], single_dist)
+
+
+# ---------------------------------------------------------------------
+# clip_bound opt-in (Phase 7 real-pipeline PRE-CODING CORRECTION: query
+# latents must be clipped the same way prototypes were, or an encoder
+# whose natural latent norm differs from B makes every distance
+# uninformative -- see prototypes.py docstrings for the real-data finding).
+# ---------------------------------------------------------------------
+
+
+def test_classify_with_prototypes_default_does_not_clip_query():
+    # unchanged behavior: a query far outside bound=1.0 is still compared raw
+    prototypes = {0: np.array([0.0, 0.0]), 1: np.array([10.0, 0.0])}
+    label, dist = classify_with_prototypes(np.array([9.5, 0.0]), prototypes, threshold=5.0)
+    assert label == 1
+    assert np.isclose(dist, 0.5)
+
+
+def test_classify_with_prototypes_clip_bound_clips_query_before_distance():
+    # prototype at [1, 0] (on the bound); a query at [100, 0], clipped to
+    # bound=1.0, becomes [1, 0] too -- distance collapses to ~0, not ~99.
+    prototypes = {0: np.array([1.0, 0.0])}
+    label, dist = classify_with_prototypes(
+        np.array([100.0, 0.0]), {0: prototypes[0], 1: np.array([-1.0, 0.0])}, threshold=0.5, clip_bound=1.0
+    )
+    assert label == 0
+    assert np.isclose(dist, 0.0)
+
+
+def test_classify_batch_clip_bound_matches_single_example_with_clip_bound():
+    prototypes = {0: np.array([1.0, 0.0]), 1: np.array([-1.0, 0.0])}
+    threshold = 0.5
+    batch = np.array([[100.0, 0.0], [0.3, 0.0], [-50.0, 0.0]])
+    preds, dists = classify_batch_with_prototypes(batch, prototypes, threshold, clip_bound=1.0)
+
+    for i in range(len(batch)):
+        single_label, single_dist = classify_with_prototypes(batch[i], prototypes, threshold, clip_bound=1.0)
         expected = -1 if single_label is None else single_label
         assert preds[i] == expected
         assert np.isclose(dists[i], single_dist)

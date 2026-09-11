@@ -96,11 +96,18 @@ def client_prototypes(
 
 def aggregate_prototypes(
     client_prototype_list: list[dict[int, tuple[np.ndarray, int]]],
-) -> dict[int, np.ndarray]:
+    return_support: bool = False,
+):
     """Server-side aggregation: for each class, a support-weighted mean
     across every client that reported a (protected) prototype for it.
     Never touches raw examples -- only the already-clipped/noised
-    vectors each client sent."""
+    vectors each client sent.
+
+    `return_support=True` additionally returns each class's total
+    support (summed sequence count across contributing clients) --
+    needed as calibrate_threshold()'s class_weights argument by the
+    real pipeline. Default False keeps the original single-dict return
+    every existing caller/test already relies on."""
     sums: dict[int, np.ndarray] = {}
     weights: dict[int, int] = {}
     for client_protos in client_prototype_list:
@@ -111,7 +118,10 @@ def aggregate_prototypes(
             else:
                 sums[label] = sums[label] + vector * count
                 weights[label] += count
-    return {label: sums[label] / weights[label] for label in sums}
+    aggregated = {label: sums[label] / weights[label] for label in sums}
+    if return_support:
+        return aggregated, weights
+    return aggregated
 
 
 def calibrate_threshold(
@@ -143,10 +153,24 @@ def calibrate_threshold(
 
 
 def classify_with_prototypes(
-    z: np.ndarray, global_prototypes: dict[int, np.ndarray], threshold: float
+    z: np.ndarray, global_prototypes: dict[int, np.ndarray], threshold: float, clip_bound: float | None = None
 ) -> tuple[int | None, float]:
     """Returns (predicted_label_or_None, min_distance). None means NEW
-    CLASS (zero-day) -- min_distance exceeded threshold."""
+    CLASS (zero-day) -- min_distance exceeded threshold.
+
+    `clip_bound`: PRE-CODING CORRECTION (Phase 7 real-data pipeline,
+    approved by user) -- prototypes are L2-clipped to B at training
+    time (privacy protection for the transmitted statistic), but an
+    encoder's natural latent norm can differ arbitrarily from B (e.g.
+    ~2.28 vs B=1.0 on real CICIDS2017 data), which would otherwise put
+    every query point at a near-constant, uninformative distance from
+    every prototype. Passing the same B here symmetrically clips the
+    query latent before distance comparison, so both sides of the
+    comparison live on the same scale. Default None preserves the
+    original (unclipped-query) behavior this function was first tested
+    with -- callers must opt in explicitly."""
+    if clip_bound is not None:
+        z = clip_prototype(z, clip_bound)
     best_label, best_dist = None, float("inf")
     for label, prototype in global_prototypes.items():
         dist = float(np.linalg.norm(z - prototype))
@@ -158,12 +182,20 @@ def classify_with_prototypes(
 
 
 def classify_batch_with_prototypes(
-    z_batch: np.ndarray, global_prototypes: dict[int, np.ndarray], threshold: float
+    z_batch: np.ndarray, global_prototypes: dict[int, np.ndarray], threshold: float, clip_bound: float | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
     """Vectorized version of classify_with_prototypes for a batch of
     latents. Returns (predictions, min_distances); predictions use -1
     as the NEW CLASS sentinel (consistent with this project's existing
-    -1-means-"not a real client/class" convention elsewhere)."""
+    -1-means-"not a real client/class" convention elsewhere).
+
+    `clip_bound`: see classify_with_prototypes docstring -- same
+    symmetric-clip opt-in, vectorized here (equivalent to applying
+    clip_prototype() to every row)."""
+    if clip_bound is not None:
+        norms = np.linalg.norm(z_batch, axis=1, keepdims=True)
+        scale = np.where(norms > clip_bound, clip_bound / np.where(norms == 0, 1.0, norms), 1.0)
+        z_batch = z_batch * scale
     labels = sorted(global_prototypes.keys())
     proto_matrix = np.stack([global_prototypes[label] for label in labels])  # (num_classes, latent_dim)
     dists = np.linalg.norm(z_batch[:, None, :] - proto_matrix[None, :, :], axis=2)  # (batch, num_classes)
