@@ -42,6 +42,7 @@ from fedpda_ids.data.sequence_dataset import (  # noqa: E402
 )
 from fedpda_ids.evaluation.metrics import compute_zero_day_metrics  # noqa: E402
 from fedpda_ids.federated.simulation import build_trainable_client_pool, load_shared_checkpoint, make_model  # noqa: E402
+from fedpda_ids.privacy.dp import calibrate_prototype_noise_std  # noqa: E402
 from fedpda_ids.models.prototypes import (  # noqa: E402
     aggregate_prototypes,
     calibrate_threshold,
@@ -85,6 +86,10 @@ def main() -> None:
                          help="run-tag the Phase 6 train_personalized.py run was saved under, if any")
     parser.add_argument("--clip-bound", type=float, default=None)
     parser.add_argument("--threshold-multiplier", type=float, default=None)
+    parser.add_argument("--target-epsilon", type=float, default=None,
+                         help="Phase 8: DP noise for the transmitted prototypes. Default (unset) = "
+                              "inf = no noise, the original Phase 7 behavior.")
+    parser.add_argument("--target-delta", type=float, default=None)
     parser.add_argument("--run-tag", type=str, default="")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--config", default="configs/config.yaml")
@@ -125,6 +130,8 @@ def main() -> None:
     proto_cfg = config["prototypes"]
     clip_bound = args.clip_bound if args.clip_bound is not None else proto_cfg["clip_bound"]
     threshold_multiplier = args.threshold_multiplier if args.threshold_multiplier is not None else proto_cfg["zero_day_threshold_multiplier"]
+    target_epsilon = args.target_epsilon if args.target_epsilon is not None else float("inf")
+    target_delta = args.target_delta if args.target_delta is not None else config["privacy"]["delta"]
 
     # Same global class vocabulary + trainable pool Phase 6 used, recomputed
     # deterministically from the same sequence artifacts/config (not parsed
@@ -161,13 +168,22 @@ def main() -> None:
     load_shared_checkpoint(best_shared_ckpt, model)
     encoder = model.encoder
 
+    # Phase 8: DP noise for the transmitted prototypes. target_epsilon=inf
+    # (default) means noise_std=0.0 -- unchanged Phase 7 behavior. See
+    # calibrate_prototype_noise_std()'s docstring for why the joint
+    # sensitivity across this client's (up to num_classes) contributed
+    # prototypes -- not clip_bound alone -- is what's calibrated against.
+    noise_std = calibrate_prototype_noise_std(target_epsilon, target_delta, clip_bound, num_classes)
+    noise_rng = np.random.default_rng(seed)
+    noise_fn = (lambda v: v + noise_rng.normal(0.0, noise_std, size=v.shape)) if noise_std > 0.0 else None
+
     # 1. Each pool client computes its own protected prototypes from its
     #    OWN train split (never centralized/pooled raw data).
     client_prototype_list = []
     per_client_report = {}
     for client_id in pool:
         scope = build_scope_dataloaders(seq_dir, client_id_col, client_id, batch_size, num_workers, False, label_to_index)
-        protos = client_prototypes(encoder, scope["loaders"]["train"], device, clip_bound=clip_bound, noise_fn=None)
+        protos = client_prototypes(encoder, scope["loaders"]["train"], device, clip_bound=clip_bound, noise_fn=noise_fn)
         client_prototype_list.append(protos)
         per_client_report[client_id] = {
             "num_classes": len(protos),
@@ -229,6 +245,7 @@ def main() -> None:
         "run_config": {
             "dataset": args.dataset, "alpha": args.alpha, "scheme": scope_desc,
             "clip_bound": clip_bound, "threshold_multiplier": threshold_multiplier,
+            "target_epsilon": target_epsilon, "target_delta": target_delta, "prototype_noise_std": noise_std,
             "seed": seed, "num_features": num_features, "num_classes": num_classes,
             "label_to_index": label_to_index, "pool_size": len(pool), "num_clients_configured": num_clients_configured,
         },

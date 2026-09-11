@@ -45,6 +45,15 @@ from fedpda_ids.federated.client import (
 )
 from fedpda_ids.models.lstm_autoencoder import LSTMAutoencoderClassifier
 from fedpda_ids.models.trainer import evaluate, save_checkpoint
+from fedpda_ids.privacy.dp import (
+    adaptive_clip_threshold,
+    add_gaussian_noise,
+    calibrate_noise_multiplier,
+    clip_update,
+    compute_achieved_epsilon,
+    compute_update,
+    update_norm,
+)
 
 logger = logging.getLogger("fedpda_ids")
 
@@ -324,6 +333,69 @@ class PersonalizedCheckpointingFedAvg(FedAvg):
         return result
 
 
+def evaluate_personalized_pool(
+    pool: list[int],
+    seq_dir: Path,
+    client_id_col: str,
+    checkpoint_dir: Path,
+    run_name: str,
+    num_features: int,
+    num_classes: int,
+    model_cfg: dict,
+    window_size: int,
+    batch_size: int,
+    num_workers: int,
+    label_to_index: dict[str, int],
+    index_to_label: dict[int, str],
+    lambda_ce: float,
+    device: torch.device,
+) -> tuple[dict, dict]:
+    """Per-client final test evaluation, shared by run_personalized_simulation
+    and run_dp_personalized_simulation: pairs the best shared checkpoint
+    with each pool client's own most-recently-saved local head. Clients
+    never sampled (no saved head) are skipped and reported, never
+    fabricated -- same for clients with genuinely empty test splits."""
+    best_shared_model = make_model(num_features, num_classes, model_cfg, window_size)
+    load_shared_checkpoint(Path(checkpoint_dir) / f"{run_name}_best.pt", best_shared_model)
+
+    per_client_test_metrics = {}
+    skipped_no_head = []
+    for client_id in pool:
+        head_path = local_head_path(checkpoint_dir, run_name, client_id)
+        client_model = make_model(num_features, num_classes, model_cfg, window_size)
+        client_model.load_state_dict(best_shared_model.state_dict())  # start from best shared weights
+        found = load_local_head(client_model, head_path)
+        if not found:
+            skipped_no_head.append(client_id)
+            continue
+
+        client_scope = build_scope_dataloaders(seq_dir, client_id_col, client_id, batch_size, num_workers, False, label_to_index)
+        test_loader = client_scope["loaders"]["test"]
+        if len(client_scope["datasets"]["test"]) == 0:
+            per_client_test_metrics[client_id] = {"status": "empty_test_split"}
+            continue
+        metrics = evaluate(client_model, test_loader, device, lambda_ce, index_to_label)
+        per_client_test_metrics[client_id] = metrics
+
+    if skipped_no_head:
+        logger.warning("%d/%d pool clients were never sampled during training (no personalized head learned): %s",
+                        len(skipped_no_head), len(pool), skipped_no_head)
+
+    valid_metrics = [m for m in per_client_test_metrics.values() if "status" not in m]
+    accs = [m["accuracy"] for m in valid_metrics]
+    macro_f1s = [m["macro_f1"] for m in valid_metrics]
+    per_client_summary = {
+        "num_clients_evaluated": len(valid_metrics),
+        "num_clients_skipped_no_head": len(skipped_no_head),
+        "skipped_client_ids": skipped_no_head,
+        "accuracy_mean": float(np.mean(accs)) if accs else None,
+        "accuracy_std": float(np.std(accs)) if accs else None,
+        "macro_f1_mean": float(np.mean(macro_f1s)) if macro_f1s else None,
+        "macro_f1_std": float(np.std(macro_f1s)) if macro_f1s else None,
+    }
+    return per_client_test_metrics, per_client_summary
+
+
 def run_personalized_simulation(
     seq_dir: Path,
     client_id_col: str,
@@ -425,47 +497,12 @@ def run_personalized_simulation(
         client_resources={"num_cpus": max_cpus_per_client, "num_gpus": 0.0},
     )
 
-    # Per-client final test evaluation: best shared checkpoint + each
-    # client's own most-recently-saved local head. Clients never
-    # sampled (no saved head) are skipped and reported, not fabricated.
-    best_shared_model = make_model(num_features, num_classes, model_cfg, window_size)
-    load_shared_checkpoint(checkpoint_dir / f"{run_name}_best.pt", best_shared_model)
-
-    per_client_test_metrics = {}
-    skipped_no_head = []
-    for client_id in pool:
-        head_path = local_head_path(checkpoint_dir, run_name, client_id)
-        client_model = make_model(num_features, num_classes, model_cfg, window_size)
-        client_model.load_state_dict(best_shared_model.state_dict())  # start from best shared weights
-        found = load_local_head(client_model, head_path)
-        if not found:
-            skipped_no_head.append(client_id)
-            continue
-
-        client_scope = build_scope_dataloaders(seq_dir, client_id_col, client_id, batch_size, num_workers, False, label_to_index)
-        test_loader = client_scope["loaders"]["test"]
-        if len(client_scope["datasets"]["test"]) == 0:
-            per_client_test_metrics[client_id] = {"status": "empty_test_split"}
-            continue
-        metrics = evaluate(client_model, test_loader, device, lambda_ce, index_to_label)
-        per_client_test_metrics[client_id] = metrics
-
-    if skipped_no_head:
-        logger.warning("%d/%d pool clients were never sampled during training (no personalized head learned): %s",
-                        len(skipped_no_head), len(pool), skipped_no_head)
-
-    valid_metrics = [m for m in per_client_test_metrics.values() if "status" not in m]
-    accs = [m["accuracy"] for m in valid_metrics]
-    macro_f1s = [m["macro_f1"] for m in valid_metrics]
-    per_client_summary = {
-        "num_clients_evaluated": len(valid_metrics),
-        "num_clients_skipped_no_head": len(skipped_no_head),
-        "skipped_client_ids": skipped_no_head,
-        "accuracy_mean": float(np.mean(accs)) if accs else None,
-        "accuracy_std": float(np.std(accs)) if accs else None,
-        "macro_f1_mean": float(np.mean(macro_f1s)) if macro_f1s else None,
-        "macro_f1_std": float(np.std(macro_f1s)) if macro_f1s else None,
-    }
+    per_client_test_metrics, per_client_summary = evaluate_personalized_pool(
+        pool=pool, seq_dir=seq_dir, client_id_col=client_id_col, checkpoint_dir=checkpoint_dir, run_name=run_name,
+        num_features=num_features, num_classes=num_classes, model_cfg=model_cfg, window_size=window_size,
+        batch_size=batch_size, num_workers=num_workers, label_to_index=label_to_index, index_to_label=index_to_label,
+        lambda_ce=lambda_ce, device=device,
+    )
 
     return {
         "history_losses_centralized": history.losses_centralized,
@@ -475,6 +512,211 @@ def run_personalized_simulation(
         "history_metrics_distributed": history.metrics_distributed,
         "best_round": strategy.best_round,
         "best_val_mse": strategy.best_val_mse,
+        "per_client_test_metrics": per_client_test_metrics,
+        "per_client_summary": per_client_summary,
+        "run_config": run_config,
+        "pool": pool,
+        "best_checkpoint": str(checkpoint_dir / f"{run_name}_best.pt"),
+        "last_checkpoint": str(checkpoint_dir / f"{run_name}_last.pt"),
+    }
+
+
+# ---------------------------------------------------------------------
+# Phase 8: client-level DP on top of personalized FL's shared encoder/
+# decoder updates (see src/fedpda_ids/privacy/dp.py module docstring
+# for the full mechanism + the user-approved PRE-CODING CORRECTION on
+# uniform-per-client aggregation weighting).
+# ---------------------------------------------------------------------
+
+
+class DPPersonalizedFedAvg(PersonalizedCheckpointingFedAvg):
+    """Same shared-parameter FedAvg as PersonalizedCheckpointingFedAvg,
+    except aggregate_fit is entirely replaced: instead of a weighted
+    average of raw parameters, each client's UPDATE (new shared params
+    minus what it started the round with) is clipped to an adaptive
+    per-round median threshold, summed, given one shared Gaussian noise
+    draw, and divided by a FIXED m=clients_per_round -- never len(results)
+    or a client's own dataset size (that would make the aggregation
+    weight itself data-dependent, breaking the sensitivity bound the
+    accountant's noise calibration relies on). All DP logic lives here,
+    entirely server-side -- FlowerLSTMClient itself is unchanged."""
+
+    def __init__(self, *args, noise_multiplier: float, clients_per_round: int, seed: int, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.noise_multiplier = noise_multiplier
+        self.clients_per_round = clients_per_round
+        self.rng = np.random.default_rng(seed)
+        self.current_global_params: list[np.ndarray] | None = None
+        self.clip_norm_history: list[float] = []
+
+    def initialize_parameters(self, client_manager):
+        parameters = super().initialize_parameters(client_manager)
+        if parameters is not None:
+            self.current_global_params = parameters_to_ndarrays(parameters)
+        return parameters
+
+    def aggregate_fit(self, server_round: int, results, failures):
+        if not results:
+            return None, {}
+        if not self.accept_failures and failures:
+            return None, {}
+
+        client_updates = [
+            compute_update(parameters_to_ndarrays(fit_res.parameters), self.current_global_params)
+            for _, fit_res in results
+        ]
+        clip_norm = adaptive_clip_threshold([update_norm(u) for u in client_updates])
+        self.clip_norm_history.append(clip_norm)
+
+        clipped = [clip_update(u, clip_norm) for u in client_updates]
+        summed = clipped[0]
+        for u in clipped[1:]:
+            summed = [s + a for s, a in zip(summed, u)]
+
+        noised_summed = add_gaussian_noise(summed, self.noise_multiplier, clip_norm, self.rng)
+        averaged_update = [arr / self.clients_per_round for arr in noised_summed]
+        self.current_global_params = [old + delta for old, delta in zip(self.current_global_params, averaged_update)]
+
+        parameters_aggregated = ndarrays_to_parameters(self.current_global_params)
+
+        metrics_aggregated = {}
+        if self.fit_metrics_aggregation_fn:
+            fit_metrics = [(res.num_examples, res.metrics) for _, res in results]
+            metrics_aggregated = self.fit_metrics_aggregation_fn(fit_metrics)
+        metrics_aggregated["dp_clip_norm"] = clip_norm
+
+        return parameters_aggregated, metrics_aggregated
+
+
+def run_dp_personalized_simulation(
+    seq_dir: Path,
+    client_id_col: str,
+    num_clients_configured: int,
+    clients_per_round: int,
+    num_rounds: int,
+    local_epochs: int,
+    batch_size: int,
+    model_cfg: dict,
+    window_size: int,
+    min_train_sequences: int,
+    min_train_classes: int,
+    checkpoint_dir: Path,
+    run_name: str,
+    seed: int,
+    target_epsilon: float,
+    target_delta: float,
+    num_workers: int = 0,
+    max_cpus_per_client: int = 4,
+) -> dict:
+    """Same overall shape as run_personalized_simulation, with client-
+    level DP applied to the shared encoder/decoder updates (see
+    DPPersonalizedFedAvg). target_epsilon=inf means "no DP" (noise_
+    multiplier=0.0) -- in practice callers should just reuse an
+    existing run_personalized_simulation result for that point of the
+    sweep instead of calling this function, but it is handled correctly
+    here too (clipping still applies; a real, if less commonly reported,
+    ablation).
+    """
+    seq_dir = Path(seq_dir)
+
+    global_labels = get_scope_train_labels(seq_dir, client_id_col, None)
+    label_to_index = build_label_index(global_labels)
+    index_to_label = {i: label for label, i in label_to_index.items()}
+    num_classes = len(label_to_index)
+
+    pool = build_trainable_client_pool(seq_dir, client_id_col, num_clients_configured, min_train_sequences, min_train_classes)
+    logger.info("DP personalized FL client pool: %d/%d configured clients are trainable", len(pool), num_clients_configured)
+
+    device = torch.device("cpu")
+    lambda_ce = model_cfg["loss"]["lambda_ce"]
+    learning_rate = model_cfg["optimizer"]["learning_rate"]
+
+    centralized_scope = build_scope_dataloaders(seq_dir, client_id_col, None, batch_size, num_workers, False, label_to_index)
+    num_features = next(iter(centralized_scope["loaders"]["train"]))[0].shape[-1]
+    val_loader = centralized_scope["loaders"]["val"]
+
+    checkpoint_dir = Path(checkpoint_dir)
+
+    def client_fn(context: Context):
+        partition_id = int(context.node_config["partition-id"])
+        client_id = pool[partition_id]
+
+        scope = build_scope_dataloaders(
+            seq_dir, client_id_col, client_id, batch_size, num_workers, False, label_to_index,
+        )
+        model = make_model(num_features, num_classes, model_cfg, window_size)
+        client = FlowerLSTMClient(
+            client_id=client_id, model=model,
+            train_loader=scope["loaders"]["train"], val_loader=scope["loaders"]["val"],
+            device=device, local_epochs=local_epochs, lambda_ce=lambda_ce,
+            learning_rate=learning_rate, index_to_label=index_to_label,
+            personalized=True, head_path=local_head_path(checkpoint_dir, run_name, client_id),
+        )
+        return client.to_client()
+
+    template_model = make_model(num_features, num_classes, model_cfg, window_size)
+    initial_parameters = ndarrays_to_parameters(get_shared_parameters(template_model))
+
+    def evaluate_fn(server_round: int, parameters, config):
+        model = make_model(num_features, num_classes, model_cfg, window_size)
+        set_shared_parameters(model, parameters)
+        metrics = evaluate(model, val_loader, device, lambda_ce, index_to_label)
+        return metrics["mse"], {"val_mse": metrics["mse"]}
+
+    # sample_rate: this round's client-subsampling probability -- the
+    # same fraction Flower's fraction_fit/fraction_evaluate use, and
+    # what the RDP accountant's calibration assumes.
+    sample_rate = clients_per_round / len(pool)
+    noise_multiplier = calibrate_noise_multiplier(target_epsilon, target_delta, sample_rate, num_rounds)
+
+    run_config = {
+        "run_name": run_name, "personalized": True, "dp": True,
+        "target_epsilon": target_epsilon, "target_delta": target_delta,
+        "noise_multiplier": noise_multiplier, "sample_rate": sample_rate,
+        "num_clients_configured": num_clients_configured, "num_clients_pool": len(pool),
+        "clients_per_round": clients_per_round, "num_rounds": num_rounds, "local_epochs": local_epochs,
+        "batch_size": batch_size, "seed": seed, "num_features": num_features, "num_classes": num_classes,
+        "label_to_index": label_to_index,
+    }
+
+    strategy = DPPersonalizedFedAvg(
+        fraction_fit=sample_rate, fraction_evaluate=sample_rate,
+        min_fit_clients=clients_per_round, min_evaluate_clients=clients_per_round,
+        min_available_clients=len(pool),
+        evaluate_fn=evaluate_fn, initial_parameters=initial_parameters,
+        fit_metrics_aggregation_fn=weighted_average_metrics,
+        evaluate_metrics_aggregation_fn=weighted_average_metrics,
+        checkpoint_dir=checkpoint_dir, run_name=run_name, run_config=run_config, template_model=template_model,
+        noise_multiplier=noise_multiplier, clients_per_round=clients_per_round, seed=seed,
+    )
+
+    history = fl.simulation.start_simulation(
+        client_fn=client_fn,
+        num_clients=len(pool),
+        config=fl.server.ServerConfig(num_rounds=num_rounds),
+        strategy=strategy,
+        client_resources={"num_cpus": max_cpus_per_client, "num_gpus": 0.0},
+    )
+
+    achieved_epsilon = compute_achieved_epsilon(noise_multiplier, sample_rate, num_rounds, target_delta)
+
+    per_client_test_metrics, per_client_summary = evaluate_personalized_pool(
+        pool=pool, seq_dir=seq_dir, client_id_col=client_id_col, checkpoint_dir=checkpoint_dir, run_name=run_name,
+        num_features=num_features, num_classes=num_classes, model_cfg=model_cfg, window_size=window_size,
+        batch_size=batch_size, num_workers=num_workers, label_to_index=label_to_index, index_to_label=index_to_label,
+        lambda_ce=lambda_ce, device=device,
+    )
+
+    return {
+        "history_losses_centralized": history.losses_centralized,
+        "history_metrics_centralized": history.metrics_centralized,
+        "history_losses_distributed": history.losses_distributed,
+        "history_metrics_distributed_fit": history.metrics_distributed_fit,
+        "history_metrics_distributed": history.metrics_distributed,
+        "best_round": strategy.best_round,
+        "best_val_mse": strategy.best_val_mse,
+        "clip_norm_history": strategy.clip_norm_history,
+        "achieved_epsilon": achieved_epsilon,
         "per_client_test_metrics": per_client_test_metrics,
         "per_client_summary": per_client_summary,
         "run_config": run_config,
