@@ -900,9 +900,19 @@ def run_secagg_personalized_simulation(
             strategy=strategy,
             client_manager=SimpleClientManager(),
         )
+        # num_shares/reconstruction_threshold size the secret-sharing scheme
+        # among the clients ACTUALLY SAMPLED in a given round (clients_per_round),
+        # not the full trainable pool -- a real bug found via a real-data smoke
+        # test (CICIDS2017 alpha=5: pool=40, clients_per_round=8): using
+        # len(pool) here made every round's SecAgg+ handshake wait for shares
+        # from clients that were never even asked to participate that round,
+        # so no client ever got a personalized head trained. The tiny
+        # synthetic tests never caught this because they used
+        # num_clients_configured == clients_per_round (every client sampled
+        # every round), coincidentally making the two values equal.
         fit_workflow = SecAggPlusWorkflow(
-            num_shares=len(pool),
-            reconstruction_threshold=max(1, len(pool) - 1),
+            num_shares=clients_per_round,
+            reconstruction_threshold=max(1, clients_per_round - 1),
             max_weight=max_weight,
             clipping_range=clipping_range,
             modulus_range=modulus_range,

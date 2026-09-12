@@ -117,8 +117,11 @@ def main() -> None:
     print(f"DONE: {run_name} ({elapsed:.1f}s)")
     print(f"  best round={result['best_round']} best_val_mse={result['best_val_mse']:.4f}")
     print(f"  per-client: n={summ['num_clients_evaluated']} skipped={summ['num_clients_skipped_no_head']}")
-    print(f"  accuracy: mean={summ['accuracy_mean']:.4f} std={summ['accuracy_std']:.4f}")
-    print(f"  macro_f1: mean={summ['macro_f1_mean']:.4f} std={summ['macro_f1_std']:.4f}")
+    if summ["accuracy_mean"] is None:
+        print("  accuracy/macro_f1: N/A (no client was ever sampled -- see skipped_client_ids in results)")
+    else:
+        print(f"  accuracy: mean={summ['accuracy_mean']:.4f} std={summ['accuracy_std']:.4f}")
+        print(f"  macro_f1: mean={summ['macro_f1_mean']:.4f} std={summ['macro_f1_std']:.4f}")
     print(f"  results: {results_path}")
 
 
