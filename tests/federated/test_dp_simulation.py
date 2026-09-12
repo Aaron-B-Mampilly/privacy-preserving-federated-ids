@@ -11,7 +11,14 @@ import pandas as pd
 import torch
 
 from fedpda_ids.data.sequences import build_sequences
-from fedpda_ids.federated.simulation import run_dp_personalized_simulation, run_personalized_simulation
+from fedpda_ids.federated.client import save_local_head
+from fedpda_ids.federated.simulation import (
+    evaluate_personalized_pool,
+    make_model,
+    run_dp_personalized_simulation,
+    run_personalized_simulation,
+    save_shared_checkpoint,
+)
 
 F = 6
 W = 10
@@ -119,3 +126,38 @@ def test_dp_personalized_simulation_smaller_epsilon_means_more_noise(tmp_path):
         checkpoint_dir=tmp_path / "tight", run_name="dp_tight", target_epsilon=0.5, **kwargs
     )
     assert result_tight["run_config"]["noise_multiplier"] > result_loose["run_config"]["noise_multiplier"]
+
+
+# TEST: evaluate_personalized_pool's checkpoint_suffix param actually
+# controls which file gets loaded -- the PRE-CODING CORRECTION for the
+# real finding that "best" (lowest val MSE) always picks the untrained
+# round-0 checkpoint under DP noise (confirmed on all 16 real sweep runs:
+# e.g. N-BaIoT eps=8's val MSE went 0.141 (round 0) -> 0.320 (round 1),
+# never recovering over 100 rounds). run_dp_personalized_simulation
+# requests "last" specifically to avoid ever silently evaluating an
+# untrained encoder.
+def test_evaluate_personalized_pool_checkpoint_suffix_selects_the_right_file(tmp_path):
+    seq_dir = _build_synthetic_seq_dir(tmp_path, num_clients=1)
+    checkpoint_dir = tmp_path / "checkpoints"
+    run_name = "suffix_test"
+
+    model = make_model(num_features=F, num_classes=2, model_cfg=_model_cfg(), window_size=W)
+    save_shared_checkpoint(checkpoint_dir / f"{run_name}_last.pt", model, round_num=5, run_config={}, metrics={})
+    save_local_head(model, checkpoint_dir / "personalized_heads" / run_name / "client_0.pt")
+    # deliberately do NOT create f"{run_name}_best.pt"
+
+    common = dict(
+        pool=[0], seq_dir=seq_dir, client_id_col="client_id", checkpoint_dir=checkpoint_dir, run_name=run_name,
+        num_features=F, num_classes=2, model_cfg=_model_cfg(), window_size=W, batch_size=4, num_workers=0,
+        label_to_index={"BENIGN": 0, "ATTACK": 1}, index_to_label={0: "BENIGN", 1: "ATTACK"},
+        lambda_ce=1.0, device=torch.device("cpu"),
+    )
+
+    # checkpoint_suffix="last" (what run_dp_personalized_simulation uses): succeeds
+    metrics, summary = evaluate_personalized_pool(**common, checkpoint_suffix="last")
+    assert summary["num_clients_evaluated"] == 1
+
+    # default ("best", what run_personalized_simulation uses): no such file exists here
+    import pytest
+    with pytest.raises(FileNotFoundError):
+        evaluate_personalized_pool(**common)

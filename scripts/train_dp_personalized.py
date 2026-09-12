@@ -109,6 +109,7 @@ def main() -> None:
         "history_metrics_distributed": result["history_metrics_distributed"],
         "best_round": result["best_round"], "best_val_mse": result["best_val_mse"],
         "clip_norm_history": result["clip_norm_history"], "achieved_epsilon": result["achieved_epsilon"],
+        "per_client_evaluation_checkpoint": result["per_client_evaluation_checkpoint"],
         "per_client_test_metrics": {str(k): v for k, v in result["per_client_test_metrics"].items()},
         "per_client_summary": result["per_client_summary"],
         "best_checkpoint": result["best_checkpoint"], "last_checkpoint": result["last_checkpoint"],

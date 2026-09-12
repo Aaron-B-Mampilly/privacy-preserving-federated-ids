@@ -349,21 +349,35 @@ def evaluate_personalized_pool(
     index_to_label: dict[int, str],
     lambda_ce: float,
     device: torch.device,
+    checkpoint_suffix: str = "best",
 ) -> tuple[dict, dict]:
     """Per-client final test evaluation, shared by run_personalized_simulation
-    and run_dp_personalized_simulation: pairs the best shared checkpoint
-    with each pool client's own most-recently-saved local head. Clients
+    and run_dp_personalized_simulation: pairs a shared checkpoint with
+    each pool client's own most-recently-saved local head. Clients
     never sampled (no saved head) are skipped and reported, never
-    fabricated -- same for clients with genuinely empty test splits."""
-    best_shared_model = make_model(num_features, num_classes, model_cfg, window_size)
-    load_shared_checkpoint(Path(checkpoint_dir) / f"{run_name}_best.pt", best_shared_model)
+    fabricated -- same for clients with genuinely empty test splits.
+
+    `checkpoint_suffix`: which shared checkpoint to evaluate --
+    "best" (lowest centralized val MSE, the default, unchanged Phase 6
+    behavior) or "last" (final round). PRE-CODING CORRECTION (Phase 8,
+    user-approved): under DP, injected noise can make every post-round-0
+    val MSE worse than the untrained random init (observed on ALL 16
+    real DP sweep runs -- e.g. N-BaIoT eps=8's val MSE: round 0 = 0.141,
+    round 1 = 0.320, never recovering over 100 rounds), so "best" always
+    picks round 0 -- silently evaluating an UNTRAINED encoder instead of
+    the DP-trained one. run_dp_personalized_simulation therefore always
+    requests "last" instead; run_personalized_simulation (no DP noise on
+    the deployed weights) keeps "best", where this failure mode doesn't
+    arise."""
+    shared_model = make_model(num_features, num_classes, model_cfg, window_size)
+    load_shared_checkpoint(Path(checkpoint_dir) / f"{run_name}_{checkpoint_suffix}.pt", shared_model)
 
     per_client_test_metrics = {}
     skipped_no_head = []
     for client_id in pool:
         head_path = local_head_path(checkpoint_dir, run_name, client_id)
         client_model = make_model(num_features, num_classes, model_cfg, window_size)
-        client_model.load_state_dict(best_shared_model.state_dict())  # start from best shared weights
+        client_model.load_state_dict(shared_model.state_dict())  # start from the selected shared checkpoint
         found = load_local_head(client_model, head_path)
         if not found:
             skipped_no_head.append(client_id)
@@ -700,11 +714,15 @@ def run_dp_personalized_simulation(
 
     achieved_epsilon = compute_achieved_epsilon(noise_multiplier, sample_rate, num_rounds, target_delta)
 
+    # checkpoint_suffix="last": see evaluate_personalized_pool()'s docstring
+    # -- DP noise on the deployed weights can make "best by val MSE" always
+    # pick the untrained round-0 checkpoint, so DP runs evaluate the final
+    # round instead (real DP-trained weights, never the random init).
     per_client_test_metrics, per_client_summary = evaluate_personalized_pool(
         pool=pool, seq_dir=seq_dir, client_id_col=client_id_col, checkpoint_dir=checkpoint_dir, run_name=run_name,
         num_features=num_features, num_classes=num_classes, model_cfg=model_cfg, window_size=window_size,
         batch_size=batch_size, num_workers=num_workers, label_to_index=label_to_index, index_to_label=index_to_label,
-        lambda_ce=lambda_ce, device=device,
+        lambda_ce=lambda_ce, device=device, checkpoint_suffix="last",
     )
 
     return {
@@ -717,6 +735,7 @@ def run_dp_personalized_simulation(
         "best_val_mse": strategy.best_val_mse,
         "clip_norm_history": strategy.clip_norm_history,
         "achieved_epsilon": achieved_epsilon,
+        "per_client_evaluation_checkpoint": "last",
         "per_client_test_metrics": per_client_test_metrics,
         "per_client_summary": per_client_summary,
         "run_config": run_config,
