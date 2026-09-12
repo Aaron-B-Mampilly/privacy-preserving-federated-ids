@@ -30,8 +30,13 @@ from pathlib import Path
 import flwr as fl
 import numpy as np
 import torch
+from flwr.client import ClientApp
+from flwr.client.mod import secaggplus_mod
 from flwr.common import Context, Parameters, ndarrays_to_parameters, parameters_to_ndarrays
+from flwr.server import Driver, LegacyContext, ServerApp, SimpleClientManager
 from flwr.server.strategy import FedAvg
+from flwr.server.workflow import DefaultWorkflow, SecAggPlusWorkflow
+from flwr.simulation import run_simulation
 
 from fedpda_ids.data.sequence_dataset import build_label_index, build_scope_dataloaders, check_client_trainable, get_scope_train_labels
 from fedpda_ids.federated.client import (
@@ -736,6 +741,204 @@ def run_dp_personalized_simulation(
         "clip_norm_history": strategy.clip_norm_history,
         "achieved_epsilon": achieved_epsilon,
         "per_client_evaluation_checkpoint": "last",
+        "per_client_test_metrics": per_client_test_metrics,
+        "per_client_summary": per_client_summary,
+        "run_config": run_config,
+        "pool": pool,
+        "best_checkpoint": str(checkpoint_dir / f"{run_name}_best.pt"),
+        "last_checkpoint": str(checkpoint_dir / f"{run_name}_last.pt"),
+    }
+
+
+# ---------------------------------------------------------------------
+# Phase 9: Flower SecAgg+ on top of PLAIN (non-DP) personalized FL.
+#
+# SecAgg+ cryptographically sums client updates so the server never sees
+# any individual client's update -- only the (masked, secret-shared) sum.
+# This is fundamentally incompatible with Phase 8's ADAPTIVE clipping
+# (median of individual update norms requires seeing individual values),
+# so per user decision, SecAgg+ is evaluated as its own independent
+# mechanism on the plain (no-DP) personalized pipeline, never combined
+# with Phase 8's DP mechanism -- "DP and SecAgg are different
+# mechanisms" per the frozen spec.
+#
+# SecAgg+ requires Flower's newer ServerApp/ClientApp/run_simulation
+# harness, not the legacy start_simulation(strategy=...) API Phases
+# 5/6/8 use -- but LegacyContext lets our EXISTING, UNCHANGED
+# PersonalizedCheckpointingFedAvg strategy plug into it directly:
+# SecAgg+ handles secure summation of whatever parameters clients
+# return (the shared encoder/decoder, exactly as before), then hands
+# the revealed (correctly-averaged) result to the same strategy.evaluate()
+# override for checkpointing -- no new Strategy subclass needed.
+#
+# Two real, pre-validated (standalone smoke test) parameter choices:
+# - clipping_range=16.0: SecAgg+ quantizes real-valued params into
+#   bounded integers for secret-sharing; values outside this range are
+#   silently clipped (real corruption, not an error). Measured real
+#   trained encoder/decoder weight magnitude on this project's data:
+#   max |weight| = 10.19 -- clipping_range=16.0 gives ~1.6x headroom.
+# - modulus_range=2**30: Flower's default (2**32) overflows
+#   numpy.random.RandomState.randint's int32 limit on this platform
+#   (confirmed via standalone smoke test -- a genuine Flower/numpy
+#   compatibility bug, not something specific to our parameters/data).
+#   2**30 is comfortably under int32's limit while still far exceeding
+#   the actual required capacity (num_clients * max_weight_ratio *
+#   quantization_range, at most a few hundred million for this project's
+#   scopes) -- see max_weight below for why the ratio stays small.
+# - max_weight=50000.0: SecAgg+ uses ratio = num_examples / max_weight
+#   as each client's actual weighting factor (NOT num_examples itself),
+#   so max_weight must exceed every client's real train-sequence count
+#   (measured max: 12,640 CICIDS2017, 28,485 N-BaIoT) or that client's
+#   weight silently overflows the protocol's capacity.
+# ---------------------------------------------------------------------
+
+
+def run_secagg_personalized_simulation(
+    seq_dir: Path,
+    client_id_col: str,
+    num_clients_configured: int,
+    clients_per_round: int,
+    num_rounds: int,
+    local_epochs: int,
+    batch_size: int,
+    model_cfg: dict,
+    window_size: int,
+    min_train_sequences: int,
+    min_train_classes: int,
+    checkpoint_dir: Path,
+    run_name: str,
+    seed: int,
+    num_workers: int = 0,
+    max_cpus_per_client: int = 4,
+    clipping_range: float = 16.0,
+    max_weight: float = 50000.0,
+    modulus_range: int = 2**30,
+) -> dict:
+    """Same overall shape as run_personalized_simulation, with SecAgg+
+    securely summing the shared encoder/decoder updates so the server
+    never observes any individual client's contribution -- only the
+    final (correctly-averaged) result, exactly as plain FedAvg would
+    have produced (verified via a standalone smoke test against a
+    manually-computed expected weighted average)."""
+    seq_dir = Path(seq_dir)
+
+    global_labels = get_scope_train_labels(seq_dir, client_id_col, None)
+    label_to_index = build_label_index(global_labels)
+    index_to_label = {i: label for label, i in label_to_index.items()}
+    num_classes = len(label_to_index)
+
+    pool = build_trainable_client_pool(seq_dir, client_id_col, num_clients_configured, min_train_sequences, min_train_classes)
+    logger.info("SecAgg+ personalized FL client pool: %d/%d configured clients are trainable", len(pool), num_clients_configured)
+
+    device = torch.device("cpu")
+    lambda_ce = model_cfg["loss"]["lambda_ce"]
+    learning_rate = model_cfg["optimizer"]["learning_rate"]
+
+    centralized_scope = build_scope_dataloaders(seq_dir, client_id_col, None, batch_size, num_workers, False, label_to_index)
+    num_features = next(iter(centralized_scope["loaders"]["train"]))[0].shape[-1]
+    val_loader = centralized_scope["loaders"]["val"]
+
+    checkpoint_dir = Path(checkpoint_dir)
+
+    def client_fn(context: Context):
+        partition_id = int(context.node_config["partition-id"])
+        client_id = pool[partition_id]
+
+        scope = build_scope_dataloaders(
+            seq_dir, client_id_col, client_id, batch_size, num_workers, False, label_to_index,
+        )
+        model = make_model(num_features, num_classes, model_cfg, window_size)
+        client = FlowerLSTMClient(
+            client_id=client_id, model=model,
+            train_loader=scope["loaders"]["train"], val_loader=scope["loaders"]["val"],
+            device=device, local_epochs=local_epochs, lambda_ce=lambda_ce,
+            learning_rate=learning_rate, index_to_label=index_to_label,
+            personalized=True, head_path=local_head_path(checkpoint_dir, run_name, client_id),
+        )
+        return client.to_client()
+
+    client_app = ClientApp(client_fn=client_fn, mods=[secaggplus_mod])
+
+    fraction = clients_per_round / len(pool)
+    run_config = {
+        "run_name": run_name, "personalized": True, "secagg_plus": True,
+        "num_clients_configured": num_clients_configured, "num_clients_pool": len(pool),
+        "clients_per_round": clients_per_round, "num_rounds": num_rounds, "local_epochs": local_epochs,
+        "batch_size": batch_size, "seed": seed, "num_features": num_features, "num_classes": num_classes,
+        "label_to_index": label_to_index, "clipping_range": clipping_range, "max_weight": max_weight,
+        "modulus_range": modulus_range,
+    }
+
+    captured: dict = {}
+
+    server_app = ServerApp()
+
+    @server_app.main()
+    def main(driver: Driver, context: Context) -> None:  # noqa: ANN001
+        template_model = make_model(num_features, num_classes, model_cfg, window_size)
+        initial_parameters = ndarrays_to_parameters(get_shared_parameters(template_model))
+
+        def evaluate_fn(server_round: int, parameters, config):
+            model = make_model(num_features, num_classes, model_cfg, window_size)
+            set_shared_parameters(model, parameters)
+            metrics = evaluate(model, val_loader, device, lambda_ce, index_to_label)
+            return metrics["mse"], {"val_mse": metrics["mse"]}
+
+        strategy = PersonalizedCheckpointingFedAvg(
+            fraction_fit=fraction, fraction_evaluate=fraction,
+            min_fit_clients=clients_per_round, min_evaluate_clients=clients_per_round,
+            min_available_clients=len(pool),
+            evaluate_fn=evaluate_fn, initial_parameters=initial_parameters,
+            fit_metrics_aggregation_fn=weighted_average_metrics,
+            evaluate_metrics_aggregation_fn=weighted_average_metrics,
+            checkpoint_dir=checkpoint_dir, run_name=run_name, run_config=run_config, template_model=template_model,
+        )
+
+        legacy_context = LegacyContext(
+            context=context,
+            config=fl.server.ServerConfig(num_rounds=num_rounds),
+            strategy=strategy,
+            client_manager=SimpleClientManager(),
+        )
+        fit_workflow = SecAggPlusWorkflow(
+            num_shares=len(pool),
+            reconstruction_threshold=max(1, len(pool) - 1),
+            max_weight=max_weight,
+            clipping_range=clipping_range,
+            modulus_range=modulus_range,
+        )
+        workflow = DefaultWorkflow(fit_workflow=fit_workflow)
+        workflow(driver, legacy_context)
+
+        captured["history"] = legacy_context.history
+        captured["best_round"] = strategy.best_round
+        captured["best_val_mse"] = strategy.best_val_mse
+
+    run_simulation(
+        server_app=server_app,
+        client_app=client_app,
+        num_supernodes=len(pool),
+        backend_config={"client_resources": {"num_cpus": max_cpus_per_client, "num_gpus": 0.0}},
+    )
+
+    history = captured["history"]
+
+    per_client_test_metrics, per_client_summary = evaluate_personalized_pool(
+        pool=pool, seq_dir=seq_dir, client_id_col=client_id_col, checkpoint_dir=checkpoint_dir, run_name=run_name,
+        num_features=num_features, num_classes=num_classes, model_cfg=model_cfg, window_size=window_size,
+        batch_size=batch_size, num_workers=num_workers, label_to_index=label_to_index, index_to_label=index_to_label,
+        lambda_ce=lambda_ce, device=device, checkpoint_suffix="best",
+    )
+
+    return {
+        "history_losses_centralized": history.losses_centralized,
+        "history_metrics_centralized": history.metrics_centralized,
+        "history_losses_distributed": history.losses_distributed,
+        "history_metrics_distributed_fit": history.metrics_distributed_fit,
+        "history_metrics_distributed": history.metrics_distributed,
+        "best_round": captured["best_round"],
+        "best_val_mse": captured["best_val_mse"],
+        "per_client_evaluation_checkpoint": "best",
         "per_client_test_metrics": per_client_test_metrics,
         "per_client_summary": per_client_summary,
         "run_config": run_config,
