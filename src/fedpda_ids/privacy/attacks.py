@@ -50,28 +50,59 @@ def compute_per_example_losses(model: torch.nn.Module, loader: DataLoader, devic
 
 
 def run_loss_threshold_mia(member_losses: np.ndarray, non_member_losses: np.ndarray) -> dict:
-    """Classic loss-threshold MIA: score = -loss (lower loss -> more
-    likely member, so negate for a monotonic "membership probability"
-    usable directly with sklearn's AUC/ROC utilities). Returns AUC,
-    membership advantage (max TPR-FPR over the ROC curve, Yeom et al.'s
-    definition), and the mean loss gap (member should be lower)."""
+    """Loss-threshold MIA, checked in BOTH directions and reported as
+    whichever is stronger -- a real attacker isn't obligated to
+    precommit to "lower loss = member" (the textbook assumption); they
+    would use whichever direction is empirically more predictive.
+
+    This matters concretely for this project: DP-trained checkpoints
+    (real result, found via this exact function) show member loss
+    HIGHER than non-member loss on average -- the reverse of the
+    classic assumption, plausibly from the shared encoder and a
+    client's persisted head being trained against DIFFERENT rounds'
+    (differently-noised) encoder states under heavy DP noise. Reporting
+    only the "lower loss = member" direction would have silently
+    UNDERSTATED the true attack risk for exactly those checkpoints --
+    the case that matters most for validating whether DP protects
+    against this attack. `attack_direction` in the returned dict names
+    which convention won, so this is never hidden.
+
+    Returns the WINNING direction's AUC/advantage as "auc"/"advantage"
+    (this is what should be compared across the epsilon sweep), plus
+    both directions' AUC for full transparency."""
     if len(member_losses) == 0 or len(non_member_losses) == 0:
         return {
-            "auc": float("nan"), "advantage": float("nan"),
+            "auc": float("nan"), "advantage": float("nan"), "attack_direction": None,
+            "auc_lower_loss_is_member": float("nan"), "auc_higher_loss_is_member": float("nan"),
             "mean_member_loss": float("nan"), "mean_non_member_loss": float("nan"),
             "num_member": len(member_losses), "num_non_member": len(non_member_losses),
         }
 
     y_true = np.concatenate([np.ones(len(member_losses)), np.zeros(len(non_member_losses))])
-    scores = np.concatenate([-member_losses, -non_member_losses])
+    losses = np.concatenate([member_losses, non_member_losses])
 
-    auc = float(roc_auc_score(y_true, scores))
-    fpr, tpr, _ = roc_curve(y_true, scores)
-    advantage = float(np.max(tpr - fpr))
+    # Direction A: lower loss -> member (the textbook assumption).
+    auc_lower = float(roc_auc_score(y_true, -losses))
+    fpr_lower, tpr_lower, _ = roc_curve(y_true, -losses)
+    advantage_lower = float(np.max(tpr_lower - fpr_lower))
+
+    # Direction B: higher loss -> member (what a rational attacker
+    # would switch to if this direction is actually more predictive).
+    auc_higher = float(roc_auc_score(y_true, losses))
+    fpr_higher, tpr_higher, _ = roc_curve(y_true, losses)
+    advantage_higher = float(np.max(tpr_higher - fpr_higher))
+
+    if auc_lower >= auc_higher:
+        best_auc, best_advantage, best_direction = auc_lower, advantage_lower, "lower_loss_is_member"
+    else:
+        best_auc, best_advantage, best_direction = auc_higher, advantage_higher, "higher_loss_is_member"
 
     return {
-        "auc": auc,
-        "advantage": advantage,
+        "auc": best_auc,
+        "advantage": best_advantage,
+        "attack_direction": best_direction,
+        "auc_lower_loss_is_member": auc_lower,
+        "auc_higher_loss_is_member": auc_higher,
         "mean_member_loss": float(np.mean(member_losses)),
         "mean_non_member_loss": float(np.mean(non_member_losses)),
         "num_member": int(len(member_losses)),

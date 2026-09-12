@@ -66,6 +66,24 @@ def test_mia_high_auc_when_members_have_systematically_lower_loss():
     assert result["auc"] > 0.95
     assert result["advantage"] > 0.8
     assert result["mean_member_loss"] < result["mean_non_member_loss"]
+    assert result["attack_direction"] == "lower_loss_is_member"
+
+
+def test_mia_detects_inverted_direction_where_members_have_higher_loss():
+    # a real, observed pattern in this project's DP-trained checkpoints:
+    # member loss ends up HIGHER than non-member loss. A naive
+    # "lower loss = member" attack would report near-zero advantage
+    # here (auc < 0.5) and silently understate the true attack risk --
+    # this must be caught by checking both directions.
+    rng = np.random.default_rng(7)
+    member_losses = rng.normal(1.0, 0.02, 500)      # members: HIGH loss
+    non_member_losses = rng.normal(0.1, 0.02, 500)  # non-members: LOW loss
+
+    result = run_loss_threshold_mia(member_losses, non_member_losses)
+    assert result["auc"] > 0.95       # the winning-direction AUC must still be high
+    assert result["advantage"] > 0.8
+    assert result["attack_direction"] == "higher_loss_is_member"
+    assert result["auc_lower_loss_is_member"] < 0.5  # confirms this direction alone would have looked weak
 
 
 def test_mia_auc_near_half_when_no_real_gap():
