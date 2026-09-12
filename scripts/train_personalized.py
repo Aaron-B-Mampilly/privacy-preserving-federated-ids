@@ -33,12 +33,14 @@ def main() -> None:
     parser.add_argument("--scheme", choices=["main_45", "ablation_9"], default=None)
     parser.add_argument("--rounds", type=int, default=None)
     parser.add_argument("--run-tag", type=str, default="")
+    parser.add_argument("--seed", type=int, default=None,
+                         help="override config's project.seed, e.g. for Phase 12's 3-seed final runs")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--config", default="configs/config.yaml")
     args = parser.parse_args()
 
     config = load_config(args.config)
-    seed = config["project"]["seed"]
+    seed = args.seed if args.seed is not None else config["project"]["seed"]
     set_seed(seed)
     logger = setup_logging(
         log_dir=config["logging"]["log_dir"], level=config["logging"]["level"],
