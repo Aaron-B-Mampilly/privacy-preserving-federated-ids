@@ -13,6 +13,7 @@ import pytest
 import torch
 
 from fedpda_ids.data.sequence_dataset import (
+    SequenceIndexDataset,
     ZeroDaySequenceDataset,
     build_label_index,
     build_scope_dataloaders,
@@ -236,3 +237,30 @@ def test_incomplete_final_batch_from_real_dataloader(seq_dir):
     assert len(batches) == 1  # everything fits in one (necessarily incomplete) batch
     x, y = batches[0]
     assert x.shape[0] == y.shape[0] == len(scope["datasets"]["train"])
+
+
+# ---------------------------------------------------------------------
+# Phase 10: SequenceIndexDataset -- arbitrary explicit-index subsets
+# (drift detection's reference set / chronologically-reordered stream)
+# ---------------------------------------------------------------------
+
+
+def test_sequence_index_dataset_preserves_given_order(seq_dir):
+    scope = build_scope_dataloaders(seq_dir, client_id_col="client_id", client_id=0, batch_size=1000)
+    all_indices = scope["datasets"]["train"].sequence_indices
+    assert len(all_indices) >= 2
+
+    reversed_indices = all_indices[::-1]
+    dataset = SequenceIndexDataset(seq_dir, reversed_indices)
+    assert len(dataset) == len(reversed_indices)
+
+    x_direct = np.load(seq_dir / "X.npy", mmap_mode="r")
+    for i, expected_row in enumerate(reversed_indices):
+        x, y = dataset[i]
+        assert np.allclose(x.numpy(), x_direct[expected_row].astype(np.float32))
+        assert y.item() == 0  # dummy label -- unsupervised, never a real class target
+
+
+def test_sequence_index_dataset_empty():
+    dataset = SequenceIndexDataset("unused", [])
+    assert len(dataset) == 0

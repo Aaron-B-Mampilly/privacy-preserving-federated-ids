@@ -203,6 +203,11 @@ drift:
   psi_threshold: 0.25
   psi_reference_window_size: 5000       # last N benign windows
   retrain_trigger_consecutive_rounds: 2 # mean drift > threshold for N rounds
+  # Not in the frozen spec -- chosen from real testing: PSI (10 bins) is
+  # statistically unstable below ~200 samples/round (spuriously exceeds
+  # 0.25 on pure noise), stable well below threshold at >=200. See
+  # src/fedpda_ids/drift/detectors.py's module docstring.
+  round_window_size: 500
 
 # ------------------------------------------------------------
 # Logging

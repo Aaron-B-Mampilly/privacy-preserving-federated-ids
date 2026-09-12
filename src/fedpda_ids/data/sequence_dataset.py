@@ -249,3 +249,33 @@ class ZeroDaySequenceDataset(Dataset):
         row_idx = self.sequence_indices[i]
         x = np.array(self._X[row_idx], dtype=np.float32)  # copies -- always writable
         return torch.from_numpy(x), str(self.labels[i])
+
+
+class SequenceIndexDataset(Dataset):
+    """An arbitrary, caller-supplied set of sequences by explicit
+    `sequence_index` -- for subsets that don't fit SequenceDataset's
+    (split, client) scope model, e.g. Phase 10's drift-detection
+    reference set (last N chronological BENIGN windows) or its
+    monitored stream (a scope's test split re-ordered chronologically).
+    Order is preserved exactly as given -- callers needing chronological
+    order must sort `sequence_indices` themselves before constructing
+    this. Returns (x, dummy_label=0) since drift detection is
+    unsupervised and never needs a real class target."""
+
+    def __init__(self, seq_dir: str | Path, sequence_indices):
+        self.seq_dir = Path(seq_dir)
+        self.sequence_indices = np.asarray(sequence_indices)
+        self._X = None
+
+    def _ensure_open(self):
+        if self._X is None:
+            self._X = np.load(self.seq_dir / "X.npy", mmap_mode="r")
+
+    def __len__(self) -> int:
+        return len(self.sequence_indices)
+
+    def __getitem__(self, i: int) -> tuple[torch.Tensor, torch.Tensor]:
+        self._ensure_open()
+        row_idx = self.sequence_indices[i]
+        x = np.array(self._X[row_idx], dtype=np.float32)  # copies -- always writable
+        return torch.from_numpy(x), torch.tensor(0, dtype=torch.long)
