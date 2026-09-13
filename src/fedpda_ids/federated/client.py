@@ -113,6 +113,13 @@ class FlowerLSTMClient(NumPyClient):
     persisted to `head_path` across rounds instead. When False (Phase
     5 behavior, default), the full model is exchanged, unchanged from
     before.
+
+    `proximal_mu` (E1's FedProx comparator, default 0.0 = plain FedAvg,
+    unchanged): adds a proximal term anchoring local training to this
+    round's starting (global) parameters -- see train_one_epoch's
+    docstring. Only meaningful with personalized=False (FedProx is a
+    full-model-exchange baseline, evaluated on the same basis as
+    vanilla FedAvg, not combined with personalization).
     """
 
     def __init__(
@@ -128,6 +135,7 @@ class FlowerLSTMClient(NumPyClient):
         index_to_label: dict[int, str],
         personalized: bool = False,
         head_path: Path | None = None,
+        proximal_mu: float = 0.0,
     ):
         self.client_id = client_id
         self.model = model
@@ -140,6 +148,7 @@ class FlowerLSTMClient(NumPyClient):
         self.index_to_label = index_to_label
         self.personalized = personalized
         self.head_path = head_path
+        self.proximal_mu = proximal_mu
 
         if self.personalized:
             assert self.head_path is not None, "personalized=True requires head_path"
@@ -156,11 +165,17 @@ class FlowerLSTMClient(NumPyClient):
         else:
             set_model_parameters(self.model, parameters)
 
+        global_params = (
+            [p.detach().clone() for p in self.model.parameters()] if self.proximal_mu > 0.0 else None
+        )
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
         last_metrics = {}
         for _ in range(self.local_epochs):
-            last_metrics = train_one_epoch(self.model, self.train_loader, optimizer, self.device, self.lambda_ce)
+            last_metrics = train_one_epoch(
+                self.model, self.train_loader, optimizer, self.device, self.lambda_ce,
+                proximal_mu=self.proximal_mu, global_params=global_params,
+            )
 
         if self.personalized:
             save_local_head(self.model, self.head_path)

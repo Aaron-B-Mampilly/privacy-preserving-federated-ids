@@ -80,3 +80,33 @@ def test_fedavg_simulation_end_to_end(tmp_path):
     ckpt = torch.load(result["best_checkpoint"], map_location="cpu", weights_only=False)
     assert "model_state_dict" in ckpt
     assert ckpt["run_config"]["num_clients_pool"] == 3
+
+
+# TEST (E1's FedProx comparator): runs end-to-end through the real
+# Flower/Ray harness with proximal_mu > 0 -- same server-side
+# aggregation as plain FedAvg, just a different client-side loss.
+def test_fedprox_simulation_end_to_end(tmp_path):
+    seq_dir = _build_synthetic_seq_dir(tmp_path, num_clients=3)
+    model_cfg = {
+        "latent_dim": 32,
+        "encoder": {"layer1_units": 8},
+        "decoder": {"layer1_units": 8},
+        "classifier_head": {"hidden_units": 8, "dropout": 0.2},
+        "loss": {"lambda_ce": 1.0},
+        "optimizer": {"learning_rate": 1e-3},
+    }
+
+    result = run_fedavg_simulation(
+        seq_dir=seq_dir, client_id_col="client_id", num_clients_configured=3,
+        clients_per_round=3, num_rounds=2, local_epochs=1, batch_size=4,
+        model_cfg=model_cfg, window_size=W, min_train_sequences=5, min_train_classes=2,
+        checkpoint_dir=tmp_path / "checkpoints", run_name="fedprox_smoke", seed=42,
+        proximal_mu=0.01,
+    )
+
+    assert result["pool"] == [0, 1, 2]
+    assert result["run_config"]["proximal_mu"] == 0.01
+
+    import numpy as np
+    assert np.isfinite(result["test_metrics"]["accuracy"])
+    assert np.isfinite(result["test_metrics"]["macro_f1"])

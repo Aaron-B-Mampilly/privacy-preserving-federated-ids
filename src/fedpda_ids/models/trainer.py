@@ -39,9 +39,18 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     lambda_ce: float,
+    proximal_mu: float = 0.0,
+    global_params: list[torch.Tensor] | None = None,
 ) -> dict:
+    """`proximal_mu`/`global_params` (E1's FedProx comparator, Li et al.
+    2018): when proximal_mu > 0, adds (mu/2) * ||w - w_global||^2 to the
+    loss, where w_global is a snapshot of the model's parameters taken
+    by the caller BEFORE this round's local training starts (never
+    updated during local epochs). Default proximal_mu=0.0 reproduces
+    every existing call site's behavior exactly -- this is standard
+    FedAvg local training with no proximal term."""
     model.train()
-    loss_sum = mse_sum = ce_sum = 0.0
+    loss_sum = mse_sum = ce_sum = prox_sum = 0.0
     n_batches = 0
 
     for x, y in loader:
@@ -49,6 +58,14 @@ def train_one_epoch(
         optimizer.zero_grad()
         reconstruction, logits, _ = model(x)
         total, mse, ce = compute_total_loss(reconstruction, x, logits, y, lambda_ce)
+
+        if proximal_mu > 0.0 and global_params is not None:
+            prox_term = sum(
+                (p - g).pow(2).sum() for p, g in zip(model.parameters(), global_params)
+            )
+            total = total + (proximal_mu / 2.0) * prox_term
+            prox_sum += prox_term.item()
+
         total.backward()
         optimizer.step()
 
@@ -58,7 +75,10 @@ def train_one_epoch(
         n_batches += 1
 
     n_batches = max(n_batches, 1)
-    return {"loss": loss_sum / n_batches, "mse": mse_sum / n_batches, "ce": ce_sum / n_batches}
+    return {
+        "loss": loss_sum / n_batches, "mse": mse_sum / n_batches, "ce": ce_sum / n_batches,
+        "proximal_term": prox_sum / n_batches,
+    }
 
 
 @torch.no_grad()

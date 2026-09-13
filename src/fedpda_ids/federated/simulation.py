@@ -161,7 +161,12 @@ def run_fedavg_simulation(
     seed: int,
     num_workers: int = 0,
     max_cpus_per_client: int = 4,
+    proximal_mu: float = 0.0,
 ) -> dict:
+    """`proximal_mu` (default 0.0, unchanged plain FedAvg): E1's FedProx
+    comparator (Li et al. 2018) -- see FlowerLSTMClient/train_one_epoch's
+    docstrings. Server-side aggregation is IDENTICAL to plain FedAvg;
+    FedProx only modifies the local training loss."""
     seq_dir = Path(seq_dir)
 
     # Global class vocabulary: same policy as Phase 4's centralized
@@ -197,6 +202,7 @@ def run_fedavg_simulation(
             train_loader=scope["loaders"]["train"], val_loader=scope["loaders"]["val"],
             device=device, local_epochs=local_epochs, lambda_ce=lambda_ce,
             learning_rate=learning_rate, index_to_label=index_to_label,
+            proximal_mu=proximal_mu,
         )
         return client.to_client()
 
@@ -214,7 +220,7 @@ def run_fedavg_simulation(
         "run_name": run_name, "num_clients_configured": num_clients_configured, "num_clients_pool": len(pool),
         "clients_per_round": clients_per_round, "num_rounds": num_rounds, "local_epochs": local_epochs,
         "batch_size": batch_size, "seed": seed, "num_features": num_features, "num_classes": num_classes,
-        "label_to_index": label_to_index,
+        "label_to_index": label_to_index, "proximal_mu": proximal_mu,
     }
 
     strategy = CheckpointingFedAvg(

@@ -1,12 +1,21 @@
-"""Phase 5: Flower FedAvg training.
+"""Phase 5: Flower FedAvg training. Also serves as E1's FedProx
+comparator via --proximal-mu (Li et al. 2018) -- same server-side
+aggregation, only the local training loss changes (see
+FlowerLSTMClient/train_one_epoch's docstrings). mu is not specified by
+the frozen spec (a genuine gap, not silently invented): 0.01 is used as
+the default, a commonly-cited value in the FedProx literature, and is
+CLI-overridable.
 
 Usage:
     # smoke test: few rounds, before committing to a full 100-round run
     python scripts/train_federated.py --dataset cicids2017 --alpha 5 --rounds 3 --run-tag smoketest
 
-    # full run
+    # full FedAvg run
     python scripts/train_federated.py --dataset cicids2017 --alpha 5
     python scripts/train_federated.py --dataset nbaiot --scheme main_45
+
+    # FedProx comparator (E1)
+    python scripts/train_federated.py --dataset cicids2017 --alpha 5 --proximal-mu 0.01
 """
 
 import argparse
@@ -32,6 +41,8 @@ def main() -> None:
     parser.add_argument("--alpha", choices=["5", "0.5", "0.1"], default=None)
     parser.add_argument("--scheme", choices=["main_45", "ablation_9"], default=None)
     parser.add_argument("--rounds", type=int, default=None, help="override configs/config.yaml's federated.num_rounds")
+    parser.add_argument("--proximal-mu", type=float, default=0.0,
+                         help="E1's FedProx comparator (Li et al. 2018); 0.0 = plain FedAvg (default)")
     parser.add_argument("--run-tag", type=str, default="")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--config", default="configs/config.yaml")
@@ -47,7 +58,8 @@ def main() -> None:
 
     seq_dir, client_id_col, _ = resolve_scope(config, args.dataset, args.alpha, args.scheme)
     scope_desc = args.alpha if args.dataset == "cicids2017" else (args.scheme or "main_45")
-    run_name = f"{args.dataset}_{scope_desc}_fedavg"
+    algo_desc = "fedavg" if args.proximal_mu == 0.0 else f"fedprox_mu{args.proximal_mu}"
+    run_name = f"{args.dataset}_{scope_desc}_{algo_desc}"
     if args.run_tag:
         run_name += f"_{args.run_tag}"
 
@@ -82,7 +94,7 @@ def main() -> None:
         min_train_sequences=config["training"]["local_training"]["min_train_sequences"],
         min_train_classes=config["training"]["local_training"]["min_train_classes"],
         checkpoint_dir=config["training"]["checkpoint_dir"], run_name=run_name, seed=seed,
-        num_workers=config["training"]["num_workers"],
+        num_workers=config["training"]["num_workers"], proximal_mu=args.proximal_mu,
     )
     elapsed = time.time() - t0
 

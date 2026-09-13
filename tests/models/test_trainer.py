@@ -15,6 +15,7 @@ from fedpda_ids.models.trainer import (
     save_checkpoint,
     select_device,
     train_model,
+    train_one_epoch,
 )
 
 F = 6
@@ -129,3 +130,47 @@ def test_synthetic_end_to_end_smoke_test(tmp_path):
 
     last_ckpt_path = tmp_path / "checkpoints" / "smoke_test_last.pt"
     assert last_ckpt_path.exists()
+
+
+# ---------------------------------------------------------------------
+# E1's FedProx comparator: the proximal term (Li et al. 2018)
+# ---------------------------------------------------------------------
+
+
+def test_train_one_epoch_proximal_mu_zero_matches_plain_fedavg():
+    torch.manual_seed(0)
+    model = LSTMAutoencoderClassifier(num_features=F, num_classes=C, window_size=W)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    x = torch.randn(8, W, F)
+    y = torch.randint(0, C, (8,))
+    loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(x, y), batch_size=4)
+
+    metrics = train_one_epoch(model, loader, optimizer, torch.device("cpu"), lambda_ce=1.0)
+    assert metrics["proximal_term"] == 0.0  # never accumulated when proximal_mu defaults to 0.0
+
+
+def test_train_one_epoch_proximal_term_pulls_parameters_toward_the_anchor():
+    """A model whose params start FAR from the FedProx anchor should end
+    training much closer to that anchor with a large proximal_mu than
+    with none -- the whole point of the mechanism."""
+    torch.manual_seed(1)
+    x = torch.randn(16, W, F)
+    y = torch.randint(0, C, (16,))
+    loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(x, y), batch_size=4)
+
+    def _distance_from_anchor(proximal_mu):
+        torch.manual_seed(2)
+        model = LSTMAutoencoderClassifier(num_features=F, num_classes=C, window_size=W)
+        # anchor = a snapshot deliberately far from the (small, near-zero-init) starting params
+        global_params = [p.detach().clone() + 5.0 for p in model.parameters()]
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+        for _ in range(3):
+            train_one_epoch(
+                model, loader, optimizer, torch.device("cpu"), lambda_ce=1.0,
+                proximal_mu=proximal_mu, global_params=global_params,
+            )
+        return sum((p - g).pow(2).sum().item() for p, g in zip(model.parameters(), global_params))
+
+    distance_no_prox = _distance_from_anchor(0.0)
+    distance_with_prox = _distance_from_anchor(50.0)
+    assert distance_with_prox < distance_no_prox
