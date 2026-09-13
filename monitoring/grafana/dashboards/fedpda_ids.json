@@ -1,0 +1,68 @@
+{
+  "title": "FedPDA-IDS Training",
+  "uid": "fedpda-ids-training",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "timezone": "browser",
+  "refresh": "5s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "run_name",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "Prometheus" },
+        "query": "label_values(fedpda_fl_round, run_name)",
+        "refresh": 2,
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Current FL Round",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "fedpda_fl_round{run_name=\"$run_name\"}",
+          "legendFormat": "round"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] }
+    },
+    {
+      "id": 2,
+      "title": "Centralized Validation Loss / MSE",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 10, "w": 18, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "expr": "fedpda_centralized_val_loss{run_name=\"$run_name\"}",
+          "legendFormat": "val_loss"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] }
+    },
+    {
+      "id": 3,
+      "title": "DP Adaptive Clip Norm (Phase 8 runs only)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 10 },
+      "targets": [
+        {
+          "expr": "fedpda_dp_clip_norm{run_name=\"$run_name\"}",
+          "legendFormat": "clip_norm"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "description": "Only populated for Phase 8 DP runs -- empty for FedAvg/Personalized/SecAgg+ runs, by design (see metrics_exporter.py)."
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: "fedpda_ids_training"
+    static_configs:
+      # host.docker.internal resolves to the host machine from inside a
+      # Docker Desktop container (Windows/Mac) -- the training scripts
+      # run natively on the host, not in a container, exposing metrics
+      # via start_metrics_server() at --metrics-port (default 8000).
+      - targets: ["host.docker.internal:8000"]
