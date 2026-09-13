@@ -2,11 +2,12 @@
 Ray harness (not mocked) -- on tiny synthetic data so it stays fast.
 """
 
+import numpy as np
 import pandas as pd
 import torch
 
 from fedpda_ids.data.sequences import build_sequences
-from fedpda_ids.federated.simulation import build_trainable_client_pool, run_fedavg_simulation
+from fedpda_ids.federated.simulation import build_trainable_client_pool, compute_communication_cost_mb, run_fedavg_simulation
 
 F = 6
 W = 10
@@ -107,6 +108,28 @@ def test_fedprox_simulation_end_to_end(tmp_path):
     assert result["pool"] == [0, 1, 2]
     assert result["run_config"]["proximal_mu"] == 0.01
 
-    import numpy as np
     assert np.isfinite(result["test_metrics"]["accuracy"])
     assert np.isfinite(result["test_metrics"]["macro_f1"])
+
+
+# ---------------------------------------------------------------------
+# E1/T7's MB/round metric: fully determined by parameter shapes + the
+# configured clients-per-round -- no training loop involved at all.
+# ---------------------------------------------------------------------
+
+
+def test_compute_communication_cost_mb_counts_both_directions_and_all_clients():
+    # 3 arrays of float32 (4 bytes/elem): 100 + 50 + 10 = 160 elements -> 640 bytes/direction
+    arrays = [np.zeros(100, dtype=np.float32), np.zeros(50, dtype=np.float32), np.zeros(10, dtype=np.float32)]
+    result = compute_communication_cost_mb(arrays, clients_per_round=8)
+
+    assert result["bytes_per_client_per_direction"] == 640
+    expected_total_bytes = 640 * 2 * 8  # upload + download, x8 clients
+    assert np.isclose(result["mb_per_round"], expected_total_bytes / (1024 ** 2))
+
+
+def test_compute_communication_cost_mb_scales_linearly_with_clients_per_round():
+    arrays = [np.zeros(1000, dtype=np.float32)]
+    cost_8 = compute_communication_cost_mb(arrays, clients_per_round=8)
+    cost_16 = compute_communication_cost_mb(arrays, clients_per_round=16)
+    assert np.isclose(cost_16["mb_per_round"], cost_8["mb_per_round"] * 2)

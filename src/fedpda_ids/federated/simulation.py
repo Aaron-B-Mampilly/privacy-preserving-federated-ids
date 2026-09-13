@@ -64,6 +64,27 @@ from fedpda_ids.privacy.dp import (
 logger = logging.getLogger("fedpda_ids")
 
 
+def compute_communication_cost_mb(param_arrays: list[np.ndarray], clients_per_round: int) -> dict:
+    """E1/T7's MB/round metric -- communication cost is fully determined
+    by the exchanged parameters' fixed shapes and how many clients
+    participate per round, so this is computed POST-HOC from an
+    existing checkpoint's parameters, never requiring a re-run.
+
+    Convention (a genuine gap the frozen spec doesn't specify, so
+    documented rather than silently assumed): counts BOTH directions
+    (server->client broadcast of the aggregated parameters, and
+    client->server upload of each sampled client's update) for every
+    client sampled that round -- the real network cost, not just one
+    direction or one client."""
+    bytes_per_direction = sum(int(arr.nbytes) for arr in param_arrays)
+    bytes_per_client_round_trip = bytes_per_direction * 2  # broadcast + upload
+    total_bytes_per_round = bytes_per_client_round_trip * clients_per_round
+    return {
+        "bytes_per_client_per_direction": bytes_per_direction,
+        "mb_per_round": total_bytes_per_round / (1024 ** 2),
+    }
+
+
 def build_trainable_client_pool(
     seq_dir: Path, client_id_col: str, num_clients_configured: int,
     min_train_sequences: int, min_train_classes: int,
