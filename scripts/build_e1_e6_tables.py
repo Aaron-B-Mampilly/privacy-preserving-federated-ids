@@ -389,7 +389,7 @@ def build_e5() -> dict:
             f"{dataset}_{scope_desc}_drift_retrain_full" if load_json(f"{dataset}_{scope_desc}_drift_retrain_full")
             else (f"{dataset}_{scope_desc}_drift_retrain_smoketest" if load_json(f"{dataset}_{scope_desc}_drift_retrain_smoketest") else f"{dataset}_{scope_desc}_drift_retrain")
         )
-        result[scope_label] = {
+        entry = {
             "f1_before_drift": r["f1_before_drift"],
             "f1_after_drift_no_adaptation_without_monitor": r["f1_after_drift_no_adaptation_without_monitor"],
             "drift_detection_delay_rounds": r["drift_detection_delay_rounds"],
@@ -397,6 +397,38 @@ def build_e5() -> dict:
             "num_retrain_rounds_run": r["run_config"]["num_retrain_rounds_run"],
             "note": "SMOKETEST (only 2 retrain rounds)" if "smoketest" in name_used else None,
         }
+
+        # FAIRNESS CHECK: the three arms above are NOT necessarily over the
+        # same client subset -- only clients with retrain data BEFORE the
+        # cutoff got a retrained head at all (a real, reportable finding
+        # when the trigger fires very early -- see nbaiot_main_45, where
+        # only 8/45 clients had any pre-cutoff data). Recomputes all three
+        # arms restricted to EXACTLY the clients present with real (non-
+        # status) metrics in every one of the three per-client dicts, so
+        # "did retraining help" can be answered on a matched sample instead
+        # of silently comparing 45 clients against 8.
+        per_client = r.get("per_client", {})
+        before_pc = per_client.get("before_drift", {})
+        no_adapt_pc = per_client.get("after_drift_no_adaptation", {})
+        after_pc = per_client.get("after_triggered_retraining", {})
+        matched_ids = [
+            cid for cid in after_pc
+            if "status" not in after_pc[cid] and cid in before_pc and "status" not in before_pc[cid]
+            and cid in no_adapt_pc and "status" not in no_adapt_pc[cid]
+        ]
+        entry["matched_subset_comparison"] = {
+            "num_clients_matched": len(matched_ids),
+            "num_clients_total": len(after_pc),
+            "f1_before_drift": mean_std([before_pc[cid]["macro_f1"] for cid in matched_ids]),
+            "f1_after_drift_no_adaptation": mean_std([no_adapt_pc[cid]["macro_f1"] for cid in matched_ids]),
+            "f1_after_triggered_retraining": mean_std([after_pc[cid]["macro_f1"] for cid in matched_ids]),
+            "note": (
+                f"only {len(matched_ids)}/{len(after_pc)} clients had ANY data before the drift-trigger "
+                "cutoff to retrain on -- this restricts all three arms to that SAME matched subset, so "
+                "the retraining comparison isn't confounded by evaluating different clients"
+            ) if len(matched_ids) < len(after_pc) else "all clients had retrain data -- matches the full-pool numbers above",
+        }
+        result[scope_label] = entry
     return result
 
 
