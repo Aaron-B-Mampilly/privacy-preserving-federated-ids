@@ -13,6 +13,7 @@ import pytest
 import torch
 
 from fedpda_ids.data.sequence_dataset import (
+    LabeledSequenceIndexDataset,
     SequenceIndexDataset,
     ZeroDaySequenceDataset,
     build_label_index,
@@ -264,3 +265,49 @@ def test_sequence_index_dataset_preserves_given_order(seq_dir):
 def test_sequence_index_dataset_empty():
     dataset = SequenceIndexDataset("unused", [])
     assert len(dataset) == 0
+
+
+# ---------------------------------------------------------------------
+# E5's live drift-triggered retraining: LabeledSequenceIndexDataset --
+# same "arbitrary explicit-index subset" idea as SequenceIndexDataset,
+# but with REAL class targets (needed for local retraining's classifier
+# loss, unlike Phase 10's unsupervised-only drift monitoring).
+# ---------------------------------------------------------------------
+
+
+def test_labeled_sequence_index_dataset_returns_real_class_targets(seq_dir):
+    scope = build_scope_dataloaders(seq_dir, client_id_col="client_id", client_id=0, batch_size=1000)
+    train_ds = scope["datasets"]["train"]
+    label_to_index = scope["label_to_index"]
+
+    dataset = LabeledSequenceIndexDataset(seq_dir, train_ds.sequence_indices, train_ds.labels, label_to_index)
+
+    assert len(dataset) == len(train_ds)
+    x_direct = np.load(seq_dir / "X.npy", mmap_mode="r")
+    for i in range(len(dataset)):
+        x, y = dataset[i]
+        assert np.allclose(x.numpy(), x_direct[train_ds.sequence_indices[i]].astype(np.float32))
+        assert y.item() == label_to_index[train_ds.labels[i]]
+
+
+def test_labeled_sequence_index_dataset_drops_unknown_labels(seq_dir):
+    # client 1's val split is entirely ATTACK2, which is absent from
+    # client 1's own train-derived label_to_index (the DDoS-style case) --
+    # must be dropped, never fabricated into an existing class index.
+    scope = build_scope_dataloaders(seq_dir, client_id_col="client_id", client_id=1, batch_size=1000)
+    val_ds = scope["datasets"]["val"]  # already filtered by SequenceDataset itself
+    label_to_index = scope["label_to_index"]  # {"BENIGN": 0} -- client 1's train never saw ATTACK2
+
+    # Read the RAW (unfiltered) val metadata directly to prove the drop is real.
+    metadata = pd.read_parquet(
+        seq_dir / "metadata.parquet", columns=["temporal_split", "sequence_label", "sequence_index", "client_id"],
+    )
+    raw_val = metadata[(metadata["temporal_split"] == "val") & (metadata["client_id"] == 1)]
+    assert len(raw_val) > 0
+    assert set(raw_val["sequence_label"].unique()) == {"ATTACK2"}
+
+    dataset = LabeledSequenceIndexDataset(
+        seq_dir, raw_val["sequence_index"].to_numpy(), raw_val["sequence_label"].to_numpy(), label_to_index,
+    )
+    assert len(dataset) == 0
+    assert len(val_ds) == 0  # consistent with SequenceDataset's own filtering

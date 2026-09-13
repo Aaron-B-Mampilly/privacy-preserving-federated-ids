@@ -41,16 +41,18 @@ from flwr.simulation import run_simulation
 from fedpda_ids.data.sequence_dataset import build_label_index, build_scope_dataloaders, check_client_trainable, get_scope_train_labels
 from fedpda_ids.monitoring.metrics_exporter import record_dp_clip_norm, record_round
 from fedpda_ids.federated.client import (
+    SHARED_PREFIXES,
     FlowerLSTMClient,
     get_model_parameters,
     get_shared_parameters,
     load_local_head,
     local_head_path,
+    save_local_head,
     set_model_parameters,
     set_shared_parameters,
 )
 from fedpda_ids.models.lstm_autoencoder import LSTMAutoencoderClassifier
-from fedpda_ids.models.trainer import evaluate, save_checkpoint
+from fedpda_ids.models.trainer import evaluate, save_checkpoint, train_one_epoch
 from fedpda_ids.privacy.dp import (
     adaptive_clip_threshold,
     add_gaussian_noise,
@@ -1358,4 +1360,111 @@ def run_dp_secagg_personalized_simulation(
         "pool": pool,
         "best_checkpoint": str(checkpoint_dir / f"{run_name}_best.pt"),
         "last_checkpoint": str(checkpoint_dir / f"{run_name}_last.pt"),
+    }
+
+
+# ---------------------------------------------------------------------
+# E5's "live drift-triggered retraining" -- Phase 10 built DETECTION
+# only (per its own explicit kickoff scope decision, deferring the
+# actual retrain to "Phase 12's full experiment suite"); this closes
+# that gap by actually executing a retrain once Phase 10's trigger
+# fires, so E5's Table T5 can report a real "F1 after triggered
+# retraining" number, not just where the trigger would have fired.
+#
+# Deliberately a MANUAL (non-Flower) loop, not a new Ray/simulation
+# harness: the retrain step is a handful of rounds over an already-
+# materialized real client pool, and the aggregation is the SAME
+# uniform-by-num-examples average FedAvg/PersonalizedCheckpointingFedAvg
+# already use -- there is no new cross-client protocol here, just this
+# project's existing aggregation math run directly in-process instead
+# of paying Ray's overhead for it.
+# ---------------------------------------------------------------------
+
+
+def run_drift_triggered_retraining(
+    pool: list[int],
+    retrain_loaders: dict[int, "torch.utils.data.DataLoader"],
+    checkpoint_dir: Path,
+    source_run_name: str,
+    new_run_name: str,
+    num_features: int,
+    num_classes: int,
+    model_cfg: dict,
+    window_size: int,
+    local_epochs: int,
+    num_retrain_rounds: int,
+    lambda_ce: float,
+    learning_rate: float,
+    device: torch.device,
+) -> dict:
+    """Starts from `source_run_name`'s existing shared checkpoint + each
+    pool client's existing persisted head (Phase 6/8/9's real, already-
+    trained personalized FL result -- never retrained from scratch),
+    then runs `num_retrain_rounds` of real local training using each
+    client's OWN `retrain_loaders[client_id]` (the newly-available,
+    post-drift-onset data the system would have collected by the time
+    Phase 10's monitor actually triggered), aggregating the resulting
+    shared params uniformly-by-num-examples across whichever clients had
+    retrain data that round -- exactly PersonalizedCheckpointingFedAvg's
+    own (Flower-default) aggregation policy, just orchestrated directly.
+
+    A client with no retrain data that round (`retrain_loaders` missing
+    the key, or an empty dataset -- can happen for a low-traffic client)
+    is skipped for that round's aggregation, never fabricated; if EVERY
+    client has no data in some round, that round (and all subsequent
+    ones) is skipped entirely rather than aggregating nothing.
+
+    Saves the retrained shared checkpoint + updated per-client heads
+    under `new_run_name` -- `source_run_name`'s own checkpoint/heads are
+    never overwritten, so the "before"/"without adaptation" comparison
+    point always remains available."""
+    checkpoint_dir = Path(checkpoint_dir)
+    shared_model = make_model(num_features, num_classes, model_cfg, window_size)
+    load_shared_checkpoint(checkpoint_dir / f"{source_run_name}_best.pt", shared_model)
+
+    clients_retrained_any_round: set[int] = set()
+    rounds_run = 0
+    for _round_num in range(num_retrain_rounds):
+        round_updates = []
+        for client_id in pool:
+            loader = retrain_loaders.get(client_id)
+            if loader is None or len(loader.dataset) == 0:
+                continue
+
+            client_model = make_model(num_features, num_classes, model_cfg, window_size).to(device)
+            client_model.load_state_dict(shared_model.state_dict())  # start from the CURRENT shared params
+            load_local_head(client_model, local_head_path(checkpoint_dir, source_run_name, client_id))
+
+            optimizer = torch.optim.Adam(client_model.parameters(), lr=learning_rate)
+            for _ in range(local_epochs):
+                train_one_epoch(client_model, loader, optimizer, device, lambda_ce)
+
+            save_local_head(client_model, local_head_path(checkpoint_dir, new_run_name, client_id))
+            shared_params = {k: v.detach().clone() for k, v in client_model.state_dict().items() if k.startswith(SHARED_PREFIXES)}
+            round_updates.append((shared_params, len(loader.dataset)))
+            clients_retrained_any_round.add(client_id)
+
+        if not round_updates:
+            break  # no client had any retrain data at all this round -- nothing to aggregate, stop early
+
+        total_examples = sum(n for _, n in round_updates)
+        new_shared_state = {
+            key: sum(params[key] * n for params, n in round_updates) / total_examples
+            for key in round_updates[0][0]
+        }
+        shared_model.load_state_dict(new_shared_state, strict=False)
+        rounds_run += 1
+
+    save_shared_checkpoint(
+        checkpoint_dir / f"{new_run_name}_best.pt", shared_model, rounds_run,
+        {"retrained_from": source_run_name, "num_retrain_rounds_requested": num_retrain_rounds, "num_retrain_rounds_run": rounds_run},
+        {},
+    )
+
+    return {
+        "new_run_name": new_run_name,
+        "num_retrain_rounds_requested": num_retrain_rounds,
+        "num_retrain_rounds_run": rounds_run,
+        "clients_retrained": sorted(clients_retrained_any_round),
+        "new_shared_checkpoint": str(checkpoint_dir / f"{new_run_name}_best.pt"),
     }

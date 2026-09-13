@@ -279,3 +279,47 @@ class SequenceIndexDataset(Dataset):
         row_idx = self.sequence_indices[i]
         x = np.array(self._X[row_idx], dtype=np.float32)  # copies -- always writable
         return torch.from_numpy(x), torch.tensor(0, dtype=torch.long)
+
+
+class LabeledSequenceIndexDataset(Dataset):
+    """E5's live drift-triggered retraining (Phase 10 built detection
+    only; this is the actually-retrain-on-trigger piece) needs to split
+    a client's TEST-split sequences at an arbitrary CHRONOLOGICAL cutoff
+    (the real timestamp Phase 10's own round-chunking identified as the
+    retrain-trigger point) into a "retrain on this" portion and a
+    "hold out and evaluate on this" portion -- neither is a (split,
+    client) scope SequenceDataset already models, and unlike
+    SequenceIndexDataset (Phase 10's own unsupervised-only stream
+    reader), local retraining needs REAL class targets for the
+    classifier loss, not a dummy placeholder label.
+
+    `labels`/`sequence_indices` must be the same length and in
+    whatever order the caller wants (typically chronological, since
+    that's what the drift/retrain framing cares about) -- rows whose
+    label isn't in `label_to_index` are dropped (same "never fabricate
+    an unseen class index" convention as SequenceDataset), not raised.
+    """
+
+    def __init__(self, seq_dir: str | Path, sequence_indices, labels, label_to_index: dict[str, int]):
+        self.seq_dir = Path(seq_dir)
+        sequence_indices = np.asarray(sequence_indices)
+        labels = np.asarray(labels)
+        known = np.array([label in label_to_index for label in labels])
+        self.sequence_indices = sequence_indices[known]
+        self.labels = labels[known]
+        self.label_to_index = label_to_index
+        self._X = None
+
+    def _ensure_open(self):
+        if self._X is None:
+            self._X = np.load(self.seq_dir / "X.npy", mmap_mode="r")
+
+    def __len__(self) -> int:
+        return len(self.sequence_indices)
+
+    def __getitem__(self, i: int) -> tuple[torch.Tensor, torch.Tensor]:
+        self._ensure_open()
+        row_idx = self.sequence_indices[i]
+        x = np.array(self._X[row_idx], dtype=np.float32)
+        y = self.label_to_index[self.labels[i]]
+        return torch.from_numpy(x), torch.tensor(y, dtype=torch.long)
