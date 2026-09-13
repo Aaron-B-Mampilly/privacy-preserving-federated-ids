@@ -381,6 +381,78 @@ class PersonalizedCheckpointingFedAvg(FedAvg):
         return result
 
 
+class BasePaperReplicationFedAvg(PersonalizedCheckpointingFedAvg):
+    """E1/E2's "Base-paper replication" comparator -- C. Sri Abhijit et
+    al.'s own FL mechanism (the paper this project extends), verified
+    via the paper's open-access PMC full text (PMC12484838) rather than
+    guessed:
+
+    1. Shared/personalized layer split, aggregated centrally -- this
+       part is architecturally the SAME split this project's own
+       Personalized FL (Phase 6) already uses, so it's reused as-is
+       (same FlowerLSTMClient, same frozen encoder/decoder/classifier
+       architecture -- "keep the frozen architecture... unchanged" per
+       the user's instruction; only the base paper's own tiny Dense-net
+       architecture is NOT replicated, since it was tuned for different
+       datasets this project doesn't use).
+    2. UNIFORM (1/K) averaging of shared parameters -- verified
+       different from THIS project's own FedAvg/Personalized FL, both
+       of which use Flower's default weighted-by-num-examples average.
+    3. An "N-round periodic transfer" communication schedule: the paper
+       accumulates local performance-metric deltas and transmits only
+       when a significance threshold is exceeded, checked every N=3
+       rounds. The exact metric and threshold value are NOT given in
+       the available text (a genuine gap) -- simplified here to a FIXED
+       period (transmit/aggregate every N=3 rounds unconditionally,
+       reusing the paper's own stated N), which preserves the paper's
+       primary claimed benefit (reduced communication) without
+       inventing an unstated threshold. Documented here, not silently
+       assumed to be identical to the source paper's adaptive gate.
+
+    On non-transmit rounds, the global shared parameters are held
+    unchanged (clients still train locally that round via the normal
+    fit() path, but their update isn't incorporated into the aggregate
+    until the next transmit round) -- sampled clients' local training
+    time is real compute, matching how Flower's simulation already
+    works, but their contribution is simply not applied yet.
+    """
+
+    def __init__(self, *args, transfer_period: int = 3, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.transfer_period = transfer_period
+        self.current_shared_params: list[np.ndarray] | None = None
+
+    def initialize_parameters(self, client_manager):
+        parameters = super(PersonalizedCheckpointingFedAvg, self).initialize_parameters(client_manager)
+        if parameters is not None:
+            self.current_shared_params = parameters_to_ndarrays(parameters)
+        return parameters
+
+    def aggregate_fit(self, server_round: int, results, failures):
+        if not results:
+            return None, {}
+        if not self.accept_failures and failures:
+            return None, {}
+
+        if server_round % self.transfer_period != 0:
+            # Not a transmit round: global parameters stay unchanged.
+            return ndarrays_to_parameters(self.current_shared_params), {}
+
+        client_arrays = [parameters_to_ndarrays(fit_res.parameters) for _, fit_res in results]
+        num_clients = len(client_arrays)
+        self.current_shared_params = [
+            sum(arrays[i] for arrays in client_arrays) / num_clients
+            for i in range(len(client_arrays[0]))
+        ]
+
+        metrics_aggregated = {}
+        if self.fit_metrics_aggregation_fn:
+            fit_metrics = [(res.num_examples, res.metrics) for _, res in results]
+            metrics_aggregated = self.fit_metrics_aggregation_fn(fit_metrics)
+
+        return ndarrays_to_parameters(self.current_shared_params), metrics_aggregated
+
+
 def evaluate_personalized_pool(
     pool: list[int],
     seq_dir: Path,
@@ -476,6 +548,8 @@ def run_personalized_simulation(
     num_workers: int = 0,
     max_cpus_per_client: int = 4,
     enable_monitoring: bool = False,
+    strategy_cls: type = PersonalizedCheckpointingFedAvg,
+    strategy_kwargs: dict | None = None,
 ) -> dict:
     """Phase 6: same overall shape as run_fedavg_simulation, but only
     encoder/decoder parameters are exchanged; each client keeps its
@@ -483,6 +557,13 @@ def run_personalized_simulation(
     evaluation is PER-CLIENT (there's no single global classifier to
     report one test number for), pairing the best shared checkpoint
     with each client's own most-recently-saved local head.
+
+    `strategy_cls`/`strategy_kwargs` (default: plain Personalized FL,
+    unchanged): lets E1's "Base-paper replication" comparator
+    (BasePaperReplicationFedAvg) reuse this entire function -- client
+    setup, pool-building, and final per-client evaluation are identical
+    regardless of aggregation policy, so only the Strategy class
+    differs.
     """
     seq_dir = Path(seq_dir)
 
@@ -539,10 +620,10 @@ def run_personalized_simulation(
         "num_clients_configured": num_clients_configured, "num_clients_pool": len(pool),
         "clients_per_round": clients_per_round, "num_rounds": num_rounds, "local_epochs": local_epochs,
         "batch_size": batch_size, "seed": seed, "num_features": num_features, "num_classes": num_classes,
-        "label_to_index": label_to_index,
+        "label_to_index": label_to_index, "strategy_cls": strategy_cls.__name__,
     }
 
-    strategy = PersonalizedCheckpointingFedAvg(
+    strategy = strategy_cls(
         fraction_fit=fraction, fraction_evaluate=fraction,
         min_fit_clients=clients_per_round, min_evaluate_clients=clients_per_round,
         min_available_clients=len(pool),
@@ -551,6 +632,7 @@ def run_personalized_simulation(
         evaluate_metrics_aggregation_fn=weighted_average_metrics,
         checkpoint_dir=checkpoint_dir, run_name=run_name, run_config=run_config, template_model=template_model,
         enable_monitoring=enable_monitoring,
+        **(strategy_kwargs or {}),
     )
 
     history = fl.simulation.start_simulation(
