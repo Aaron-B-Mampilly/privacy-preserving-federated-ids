@@ -25,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from fedpda_ids.federated.simulation import run_dp_personalized_simulation  # noqa: E402
+from fedpda_ids.monitoring.metrics_exporter import start_metrics_server  # noqa: E402
 from fedpda_ids.utils.config import load_config  # noqa: E402
 from fedpda_ids.utils.logging_utils import setup_logging  # noqa: E402
 from fedpda_ids.utils.seed import set_seed  # noqa: E402
@@ -42,6 +43,9 @@ def main() -> None:
     parser.add_argument("--target-delta", type=float, default=None)
     parser.add_argument("--rounds", type=int, default=None)
     parser.add_argument("--run-tag", type=str, default="")
+    parser.add_argument("--enable-monitoring", action="store_true",
+                         help="Phase 13: export round/val-loss/clip-norm metrics to Prometheus")
+    parser.add_argument("--metrics-port", type=int, default=8000)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--config", default="configs/config.yaml")
     args = parser.parse_args()
@@ -53,6 +57,9 @@ def main() -> None:
         log_dir=config["logging"]["log_dir"], level=config["logging"]["level"],
         log_to_file=config["logging"]["log_to_file"], run_name="train_dp_personalized",
     )
+    if args.enable_monitoring:
+        start_metrics_server(args.metrics_port)
+        logger.info("Prometheus metrics server started on port %d", args.metrics_port)
 
     target_delta = args.target_delta if args.target_delta is not None else config["privacy"]["delta"]
 
@@ -95,7 +102,7 @@ def main() -> None:
         min_train_classes=config["training"]["local_training"]["min_train_classes"],
         checkpoint_dir=config["training"]["checkpoint_dir"], run_name=run_name, seed=seed,
         target_epsilon=args.target_epsilon, target_delta=target_delta,
-        num_workers=config["training"]["num_workers"],
+        num_workers=config["training"]["num_workers"], enable_monitoring=args.enable_monitoring,
     )
     elapsed = time.time() - t0
 

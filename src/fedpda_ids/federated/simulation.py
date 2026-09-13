@@ -39,6 +39,7 @@ from flwr.server.workflow import DefaultWorkflow, SecAggPlusWorkflow
 from flwr.simulation import run_simulation
 
 from fedpda_ids.data.sequence_dataset import build_label_index, build_scope_dataloaders, check_client_trainable, get_scope_train_labels
+from fedpda_ids.monitoring.metrics_exporter import record_dp_clip_norm, record_round
 from fedpda_ids.federated.client import (
     FlowerLSTMClient,
     get_model_parameters,
@@ -98,14 +99,21 @@ def make_model(num_features: int, num_classes: int, model_cfg: dict, window_size
 class CheckpointingFedAvg(FedAvg):
     """Plain flwr.server.strategy.FedAvg, plus saving best/last global
     checkpoints -- mirrors Phase 4's train_model() convention (only
-    two files ever written, best = lowest centralized val loss)."""
+    two files ever written, best = lowest centralized val loss).
 
-    def __init__(self, *args, checkpoint_dir: Path, run_name: str, run_config: dict, template_model: torch.nn.Module, **kwargs):
+    `enable_monitoring` (Phase 13, default False): when True, records
+    round number + centralized val loss to Prometheus every round.
+    Off by default so importing/testing this strategy never binds an
+    HTTP port -- callers opt in explicitly via start_metrics_server()
+    plus this flag."""
+
+    def __init__(self, *args, checkpoint_dir: Path, run_name: str, run_config: dict, template_model: torch.nn.Module, enable_monitoring: bool = False, **kwargs):
         super().__init__(*args, **kwargs)
         self.checkpoint_dir = Path(checkpoint_dir)
         self.run_name = run_name
         self.run_config = run_config
         self.template_model = template_model
+        self.enable_monitoring = enable_monitoring
         self.best_val_loss = float("inf")
         self.best_round = -1
         self.last_val_loss = None
@@ -116,6 +124,8 @@ class CheckpointingFedAvg(FedAvg):
             return result
         loss, metrics = result
         self.last_val_loss = loss
+        if self.enable_monitoring:
+            record_round(self.run_name, server_round, val_loss=loss)
 
         set_model_parameters(self.template_model, parameters_to_ndarrays(parameters))
         dummy_optimizer = torch.optim.Adam(self.template_model.parameters(), lr=1e-3)
@@ -305,14 +315,18 @@ class PersonalizedCheckpointingFedAvg(FedAvg):
     lowest centralized val MSE -- a deliberately new, explicitly
     documented criterion for this phase's different model structure,
     NOT a retroactive change to Phase 5's "lowest total loss" policy.
+
+    `enable_monitoring` (Phase 13, default False): see CheckpointingFedAvg's
+    docstring -- same opt-in Prometheus recording, off by default.
     """
 
-    def __init__(self, *args, checkpoint_dir: Path, run_name: str, run_config: dict, template_model: torch.nn.Module, **kwargs):
+    def __init__(self, *args, checkpoint_dir: Path, run_name: str, run_config: dict, template_model: torch.nn.Module, enable_monitoring: bool = False, **kwargs):
         super().__init__(*args, **kwargs)
         self.checkpoint_dir = Path(checkpoint_dir)
         self.run_name = run_name
         self.run_config = run_config
         self.template_model = template_model
+        self.enable_monitoring = enable_monitoring
         self.best_val_mse = float("inf")
         self.best_round = -1
 
@@ -321,6 +335,8 @@ class PersonalizedCheckpointingFedAvg(FedAvg):
         if result is None:
             return result
         mse, metrics = result  # "loss" IS mse here, see evaluate_fn below
+        if self.enable_monitoring:
+            record_round(self.run_name, server_round, val_loss=mse)
 
         set_shared_parameters(self.template_model, parameters_to_ndarrays(parameters))
 
@@ -432,6 +448,7 @@ def run_personalized_simulation(
     seed: int,
     num_workers: int = 0,
     max_cpus_per_client: int = 4,
+    enable_monitoring: bool = False,
 ) -> dict:
     """Phase 6: same overall shape as run_fedavg_simulation, but only
     encoder/decoder parameters are exchanged; each client keeps its
@@ -506,6 +523,7 @@ def run_personalized_simulation(
         fit_metrics_aggregation_fn=weighted_average_metrics,
         evaluate_metrics_aggregation_fn=weighted_average_metrics,
         checkpoint_dir=checkpoint_dir, run_name=run_name, run_config=run_config, template_model=template_model,
+        enable_monitoring=enable_monitoring,
     )
 
     history = fl.simulation.start_simulation(
@@ -586,6 +604,8 @@ class DPPersonalizedFedAvg(PersonalizedCheckpointingFedAvg):
         ]
         clip_norm = adaptive_clip_threshold([update_norm(u) for u in client_updates])
         self.clip_norm_history.append(clip_norm)
+        if self.enable_monitoring:
+            record_dp_clip_norm(self.run_name, clip_norm)
 
         clipped = [clip_update(u, clip_norm) for u in client_updates]
         summed = clipped[0]
@@ -626,6 +646,7 @@ def run_dp_personalized_simulation(
     target_delta: float,
     num_workers: int = 0,
     max_cpus_per_client: int = 4,
+    enable_monitoring: bool = False,
 ) -> dict:
     """Same overall shape as run_personalized_simulation, with client-
     level DP applied to the shared encoder/decoder updates (see
@@ -707,6 +728,7 @@ def run_dp_personalized_simulation(
         evaluate_metrics_aggregation_fn=weighted_average_metrics,
         checkpoint_dir=checkpoint_dir, run_name=run_name, run_config=run_config, template_model=template_model,
         noise_multiplier=noise_multiplier, clients_per_round=clients_per_round, seed=seed,
+        enable_monitoring=enable_monitoring,
     )
 
     history = fl.simulation.start_simulation(

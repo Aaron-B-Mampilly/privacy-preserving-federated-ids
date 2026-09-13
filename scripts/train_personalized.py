@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from fedpda_ids.federated.simulation import run_personalized_simulation  # noqa: E402
+from fedpda_ids.monitoring.metrics_exporter import start_metrics_server  # noqa: E402
 from fedpda_ids.utils.config import load_config  # noqa: E402
 from fedpda_ids.utils.logging_utils import setup_logging  # noqa: E402
 from fedpda_ids.utils.seed import set_seed  # noqa: E402
@@ -35,6 +36,9 @@ def main() -> None:
     parser.add_argument("--run-tag", type=str, default="")
     parser.add_argument("--seed", type=int, default=None,
                          help="override config's project.seed, e.g. for Phase 12's 3-seed final runs")
+    parser.add_argument("--enable-monitoring", action="store_true",
+                         help="Phase 13: export round/val-loss metrics to Prometheus")
+    parser.add_argument("--metrics-port", type=int, default=8000)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--config", default="configs/config.yaml")
     args = parser.parse_args()
@@ -46,6 +50,9 @@ def main() -> None:
         log_dir=config["logging"]["log_dir"], level=config["logging"]["level"],
         log_to_file=config["logging"]["log_to_file"], run_name="train_personalized",
     )
+    if args.enable_monitoring:
+        start_metrics_server(args.metrics_port)
+        logger.info("Prometheus metrics server started on port %d", args.metrics_port)
 
     seq_dir, client_id_col, _ = resolve_scope(config, args.dataset, args.alpha, args.scheme)
     scope_desc = args.alpha if args.dataset == "cicids2017" else (args.scheme or "main_45")
@@ -84,7 +91,7 @@ def main() -> None:
         min_train_sequences=config["training"]["local_training"]["min_train_sequences"],
         min_train_classes=config["training"]["local_training"]["min_train_classes"],
         checkpoint_dir=config["training"]["checkpoint_dir"], run_name=run_name, seed=seed,
-        num_workers=config["training"]["num_workers"],
+        num_workers=config["training"]["num_workers"], enable_monitoring=args.enable_monitoring,
     )
     elapsed = time.time() - t0
 

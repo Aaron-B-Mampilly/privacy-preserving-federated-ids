@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 import torch
+from prometheus_client import REGISTRY
 
 from fedpda_ids.data.sequences import build_sequences
 from fedpda_ids.federated.simulation import run_personalized_simulation
@@ -145,3 +146,27 @@ def test_personalized_pool_and_shapes_are_deterministic(tmp_path):
     assert ckpt_a["shared_state_dict"].keys() == ckpt_b["shared_state_dict"].keys()
     for k in ckpt_a["shared_state_dict"]:
         assert ckpt_a["shared_state_dict"][k].shape == ckpt_b["shared_state_dict"][k].shape
+
+
+# TEST (Phase 13): enable_monitoring=True actually records to the
+# Prometheus registry every round -- default False elsewhere means
+# none of the other tests in this file ever touch the registry.
+def test_personalized_simulation_enable_monitoring_records_to_prometheus(tmp_path):
+    seq_dir = _build_synthetic_seq_dir(tmp_path, num_clients=3)
+
+    result = run_personalized_simulation(
+        seq_dir=seq_dir, client_id_col="client_id", num_clients_configured=3,
+        clients_per_round=3, num_rounds=2, local_epochs=1, batch_size=4,
+        model_cfg=_model_cfg(), window_size=W, min_train_sequences=5, min_train_classes=2,
+        checkpoint_dir=tmp_path / "checkpoints", run_name="personalized_monitoring_test", seed=42,
+        enable_monitoring=True,
+    )
+
+    # the Gauge holds whatever the MOST RECENT evaluate() call set -- the
+    # final round (2), since evaluate() is called once per round in order.
+    recorded_round = REGISTRY.get_sample_value("fedpda_fl_round", {"run_name": "personalized_monitoring_test"})
+    recorded_loss = REGISTRY.get_sample_value(
+        "fedpda_centralized_val_loss", {"run_name": "personalized_monitoring_test"}
+    )
+    assert recorded_round == 2.0
+    assert recorded_loss is not None
