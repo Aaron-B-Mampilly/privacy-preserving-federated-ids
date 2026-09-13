@@ -304,7 +304,12 @@ class LabeledSequenceIndexDataset(Dataset):
         self.seq_dir = Path(seq_dir)
         sequence_indices = np.asarray(sequence_indices)
         labels = np.asarray(labels)
-        known = np.array([label in label_to_index for label in labels])
+        # dtype=bool explicit: np.array([]) on an empty list defaults to
+        # float64, which then fails as a boolean mask below -- a real bug
+        # found via a real-data run (an N-BaIoT client with zero rows
+        # before the drift-retrain cutoff; synthetic tests never hit this
+        # because every fixture client had at least one row on each side).
+        known = np.array([label in label_to_index for label in labels], dtype=bool)
         self.sequence_indices = sequence_indices[known]
         self.labels = labels[known]
         self.label_to_index = label_to_index

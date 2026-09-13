@@ -184,7 +184,13 @@ def main() -> None:
 
         retrain_ds = LabeledSequenceIndexDataset(seq_dir, retrain_rows["sequence_index"].to_numpy(), retrain_rows["sequence_label"].to_numpy(), label_to_index)
         eval_ds = LabeledSequenceIndexDataset(seq_dir, eval_rows["sequence_index"].to_numpy(), eval_rows["sequence_label"].to_numpy(), label_to_index)
-        retrain_loaders[client_id] = DataLoader(retrain_ds, batch_size=batch_size, shuffle=True)
+        # shuffle=True on an EMPTY dataset raises at construction time
+        # (RandomSampler requires num_samples > 0) -- a real client can
+        # genuinely have zero rows on one side of the cutoff (found via a
+        # real N-BaIoT run), and that client is meant to be skipped
+        # downstream (run_drift_triggered_retraining's own len()==0 check),
+        # never crash the whole script before it gets the chance to.
+        retrain_loaders[client_id] = DataLoader(retrain_ds, batch_size=batch_size, shuffle=len(retrain_ds) > 0)
         eval_loaders[client_id] = DataLoader(eval_ds, batch_size=batch_size, shuffle=False)
 
     # -----------------------------------------------------------------

@@ -115,3 +115,47 @@ def compute_zero_day_metrics(zero_day_predictions: np.ndarray, known_class_predi
         "recall": recall,
         "f1": f1,
     }
+
+
+def compute_benign_false_positive_rate(confusion_matrix: list[list[int]], confusion_matrix_labels: list[str], benign_label: str = "BENIGN") -> float:
+    """E1/T7's "FPR" column -- an IDS-standard false-positive rate, NOT
+    a raw sklearn multiclass metric: of every TRUE BENIGN sequence, what
+    fraction gets predicted as ANY non-BENIGN (attack) class, i.e. a
+    false alarm. Derived directly from an already-computed confusion
+    matrix (compute_classification_metrics's own output) -- no new
+    forward pass or saved run needed.
+
+    Returns NaN if this scope's classes don't include BENIGN at all
+    (never fabricated as 0)."""
+    if benign_label not in confusion_matrix_labels:
+        return float("nan")
+    cm = np.asarray(confusion_matrix)
+    benign_idx = confusion_matrix_labels.index(benign_label)
+    row = cm[benign_idx]
+    total_true_benign = int(row.sum())
+    if total_true_benign == 0:
+        return float("nan")
+    false_positives = total_true_benign - int(row[benign_idx])
+    return false_positives / total_true_benign
+
+
+def compute_unknown_vs_benign_detection_rate(zero_day_predictions: np.ndarray, benign_label_index: int) -> dict:
+    """E4(a): "unknown-vs-benign detection rate" -- of the TRUE zero-day
+    (novel-attack) examples, how many get predicted as ANYTHING OTHER
+    THAN BENIGN, whether that's the correct NEW CLASS sentinel (-1, see
+    compute_zero_day_metrics -- E4(b)'s stricter criterion) or an
+    (incorrect) known-attack label. This is the weaker, "did the system
+    at least notice this isn't normal traffic" criterion the frozen
+    spec lists separately from (b)'s stricter "flagged as genuinely
+    NEW, not just any anomaly" criterion -- distinct on purpose, not a
+    duplicate: a model could route every zero-day example into some
+    known ATTACK bucket (scoring well here, at 0.0 on (b)) or could
+    genuinely recognize novelty (scoring well on both)."""
+    n = len(zero_day_predictions)
+    if n == 0:
+        return {"num_zero_day_samples": 0, "unknown_vs_benign_detection_rate": float("nan")}
+    not_benign = int((zero_day_predictions != benign_label_index).sum())
+    return {
+        "num_zero_day_samples": n,
+        "unknown_vs_benign_detection_rate": not_benign / n,
+    }

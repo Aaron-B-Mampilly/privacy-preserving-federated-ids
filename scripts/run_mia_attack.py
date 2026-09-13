@@ -9,6 +9,12 @@ the shared encoder/decoder and its own head), non-member = that SAME
 client's own TEST split (same client, structurally held out, never
 trained on).
 
+`--source-kind fedavg` (E6's "FedAvg updates" comparator, added
+alongside the original "personalized" kind -- Phase 5's plain FedAvg
+has no per-client head at all, ONE global model + ONE global classifier
+serves every client, so there's no head to load/skip; the same full
+model is attacked against each pool client's own train/test split.
+
 Usage:
     # attack a non-DP personalized run
     python scripts/run_mia_attack.py --dataset cicids2017 --alpha 5 \
@@ -17,6 +23,10 @@ Usage:
     # attack one point of the DP epsilon sweep
     python scripts/run_mia_attack.py --dataset cicids2017 --alpha 5 \
         --source-run-name cicids2017_5_dp_personalized_eps8.0 --checkpoint-suffix last
+
+    # attack E6's "FedAvg updates" comparator (Phase 5's plain FedAvg checkpoint)
+    python scripts/run_mia_attack.py --dataset cicids2017 --alpha 5 \
+        --source-run-name cicids2017_5_fedavg --source-kind fedavg
 """
 
 import argparse
@@ -30,8 +40,8 @@ import numpy as np  # noqa: E402
 
 from fedpda_ids.data.sequence_dataset import build_scope_dataloaders  # noqa: E402
 from fedpda_ids.federated.client import load_local_head, local_head_path  # noqa: E402
-from fedpda_ids.federated.simulation import load_shared_checkpoint, make_model  # noqa: E402
-from fedpda_ids.models.trainer import select_device  # noqa: E402
+from fedpda_ids.federated.simulation import build_trainable_client_pool, load_shared_checkpoint, make_model  # noqa: E402
+from fedpda_ids.models.trainer import load_checkpoint, select_device  # noqa: E402
 from fedpda_ids.privacy.attacks import compute_per_example_losses, run_loss_threshold_mia  # noqa: E402
 from fedpda_ids.utils.config import load_config  # noqa: E402
 from fedpda_ids.utils.logging_utils import setup_logging  # noqa: E402
@@ -49,6 +59,8 @@ def main() -> None:
     parser.add_argument("--source-run-name", type=str, required=True,
                          help="exact run_name whose checkpoint+per-client heads to attack, "
                               "e.g. cicids2017_5_personalized")
+    parser.add_argument("--source-kind", choices=["personalized", "fedavg"], default="personalized",
+                         help="'fedavg' attacks a Phase 5 plain-FedAvg full-model checkpoint (no per-client head)")
     parser.add_argument("--checkpoint-suffix", choices=["best", "last"], default="best")
     parser.add_argument("--run-tag", type=str, default="")
     parser.add_argument("--overwrite", action="store_true")
@@ -74,12 +86,25 @@ def main() -> None:
         )
     source_results = json.loads(source_results_path.read_text(encoding="utf-8"))
     label_to_index = source_results["run_config"]["label_to_index"]
-    # The saved training-script summaries don't keep a top-level "pool" list --
-    # per_client_test_metrics's keys are exactly the pool clients that were
-    # actually evaluated (had a saved head); a client with no saved head can't
-    # be attacked anyway (no personalized model exists for it), so this is
-    # the correct set, not an approximation.
-    pool = [int(k) for k in source_results["per_client_test_metrics"].keys()]
+
+    if args.source_kind == "personalized":
+        # The saved training-script summaries don't keep a top-level "pool" list --
+        # per_client_test_metrics's keys are exactly the pool clients that were
+        # actually evaluated (had a saved head); a client with no saved head can't
+        # be attacked anyway (no personalized model exists for it), so this is
+        # the correct set, not an approximation.
+        pool = [int(k) for k in source_results["per_client_test_metrics"].keys()]
+    else:
+        # FedAvg has no per-client heads at all -- recompute the trainable
+        # pool the same deterministic way every other script does (from the
+        # same sequence artifacts/config), since FedAvg's own saved summary
+        # never persisted a per-client list (there's only one global test_metrics).
+        num_clients_configured = source_results["run_config"]["num_clients_configured"]
+        pool = build_trainable_client_pool(
+            seq_dir, client_id_col, num_clients_configured,
+            config["training"]["local_training"]["min_train_sequences"],
+            config["training"]["local_training"]["min_train_classes"],
+        )
 
     run_name = f"mia_{args.source_run_name}_{args.checkpoint_suffix}"
     if args.run_tag:
@@ -104,19 +129,29 @@ def main() -> None:
     centralized_scope = build_scope_dataloaders(seq_dir, client_id_col, None, batch_size, num_workers, False, label_to_index)
     num_features = next(iter(centralized_scope["loaders"]["train"]))[0].shape[-1]
 
-    shared_model = make_model(num_features, num_classes, model_cfg, window_size)
-    load_shared_checkpoint(shared_ckpt_path, shared_model)
+    if args.source_kind == "personalized":
+        shared_model = make_model(num_features, num_classes, model_cfg, window_size)
+        load_shared_checkpoint(shared_ckpt_path, shared_model)
+    else:
+        # FedAvg: ONE full model (encoder+decoder+classifier), no shared/head split.
+        shared_model = make_model(num_features, num_classes, model_cfg, window_size)
+        fedavg_ckpt = load_checkpoint(shared_ckpt_path)
+        shared_model.load_state_dict(fedavg_ckpt["model_state_dict"])
 
     per_client_results = {}
     skipped = []
     all_member, all_non_member = [], []
     for client_id in pool:
-        head_path = local_head_path(checkpoint_dir, args.source_run_name, client_id)
         client_model = make_model(num_features, num_classes, model_cfg, window_size).to(device)
         client_model.load_state_dict(shared_model.state_dict())
-        if not load_local_head(client_model, head_path):
-            skipped.append(client_id)
-            continue
+
+        if args.source_kind == "personalized":
+            head_path = local_head_path(checkpoint_dir, args.source_run_name, client_id)
+            if not load_local_head(client_model, head_path):
+                skipped.append(client_id)
+                continue
+        # fedavg: every client is attacked with the SAME global model --
+        # there is no per-client head to load or to be missing.
 
         scope = build_scope_dataloaders(seq_dir, client_id_col, client_id, batch_size, num_workers, False, label_to_index)
         if len(scope["datasets"]["test"]) == 0:
@@ -149,6 +184,7 @@ def main() -> None:
     summary = {
         "run_name": run_name,
         "source_run_name": args.source_run_name,
+        "source_kind": args.source_kind,
         "checkpoint_suffix": args.checkpoint_suffix,
         "run_config": {"dataset": args.dataset, "alpha": args.alpha, "scheme": args.scheme, "pool_size": len(pool)},
         "pooled_result": pooled_result,

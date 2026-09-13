@@ -3,7 +3,7 @@
 import numpy as np
 import torch
 
-from fedpda_ids.evaluation.metrics import compute_zero_day_metrics
+from fedpda_ids.evaluation.metrics import compute_unknown_vs_benign_detection_rate, compute_zero_day_metrics
 from fedpda_ids.models.prototypes import (
     aggregate_prototypes,
     calibrate_threshold,
@@ -250,3 +250,30 @@ def test_zero_day_metrics_partial_detection_with_false_positives():
     m = compute_zero_day_metrics(zero_day_preds, known_preds)
     assert np.isclose(m["zero_day_detection_rate"], 0.5)
     assert np.isclose(m["false_positive_rate"], 0.25)
+
+
+# ---------------------------------------------------------------------
+# E4(a): compute_unknown_vs_benign_detection_rate -- the WEAKER "did the
+# system at least notice this isn't normal traffic" criterion, distinct
+# from (b)'s stricter "flagged as genuinely NEW CLASS" criterion.
+# ---------------------------------------------------------------------
+
+
+def test_unknown_vs_benign_all_flagged_not_benign():
+    # -1 (new class) and 2 (some known ATTACK label) both count as "not benign";
+    # only 0 (BENIGN) does not.
+    zero_day_preds = np.array([-1, 2, 2, -1])
+    m = compute_unknown_vs_benign_detection_rate(zero_day_preds, benign_label_index=0)
+    assert m["unknown_vs_benign_detection_rate"] == 1.0
+
+
+def test_unknown_vs_benign_some_misclassified_as_benign():
+    zero_day_preds = np.array([-1, 0, 2, 0])  # 2 of 4 predicted BENIGN (label 0)
+    m = compute_unknown_vs_benign_detection_rate(zero_day_preds, benign_label_index=0)
+    assert np.isclose(m["unknown_vs_benign_detection_rate"], 0.5)
+
+
+def test_unknown_vs_benign_empty_is_nan_not_fabricated():
+    m = compute_unknown_vs_benign_detection_rate(np.array([]), benign_label_index=0)
+    assert m["num_zero_day_samples"] == 0
+    assert np.isnan(m["unknown_vs_benign_detection_rate"])

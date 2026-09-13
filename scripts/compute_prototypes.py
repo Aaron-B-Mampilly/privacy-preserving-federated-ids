@@ -40,7 +40,7 @@ from fedpda_ids.data.sequence_dataset import (  # noqa: E402
     build_scope_dataloaders,
     get_scope_train_labels,
 )
-from fedpda_ids.evaluation.metrics import compute_zero_day_metrics  # noqa: E402
+from fedpda_ids.evaluation.metrics import compute_unknown_vs_benign_detection_rate, compute_zero_day_metrics  # noqa: E402
 from fedpda_ids.federated.simulation import build_trainable_client_pool, load_shared_checkpoint, make_model  # noqa: E402
 from fedpda_ids.privacy.dp import calibrate_prototype_noise_std  # noqa: E402
 from fedpda_ids.models.prototypes import (  # noqa: E402
@@ -84,6 +84,10 @@ def main() -> None:
     parser.add_argument("--scheme", choices=["main_45", "ablation_9"], default=None)
     parser.add_argument("--personalized-run-tag", type=str, default="",
                          help="run-tag the Phase 6 train_personalized.py run was saved under, if any")
+    parser.add_argument("--personalized-run-name", type=str, default=None,
+                         help="T7's ablation rows need this pointed at a DIFFERENT completed run's checkpoint "
+                              "(e.g. a DP+SecAgg or drift-retrained run) -- overrides the default "
+                              "{dataset}_{scope}_personalized[_{personalized-run-tag}] name entirely when given")
     parser.add_argument("--clip-bound", type=float, default=None)
     parser.add_argument("--threshold-multiplier", type=float, default=None)
     parser.add_argument("--target-epsilon", type=float, default=None,
@@ -106,9 +110,12 @@ def main() -> None:
     seq_dir, client_id_col, rare_labels = resolve_scope(config, args.dataset, args.alpha, args.scheme)
     scope_desc = args.alpha if args.dataset == "cicids2017" else (args.scheme or "main_45")
 
-    personalized_run_name = f"{args.dataset}_{scope_desc}_personalized"
-    if args.personalized_run_tag:
-        personalized_run_name += f"_{args.personalized_run_tag}"
+    if args.personalized_run_name:
+        personalized_run_name = args.personalized_run_name
+    else:
+        personalized_run_name = f"{args.dataset}_{scope_desc}_personalized"
+        if args.personalized_run_tag:
+            personalized_run_name += f"_{args.personalized_run_tag}"
 
     run_name = f"{args.dataset}_{scope_desc}_prototypes"
     if args.run_tag:
@@ -239,6 +246,17 @@ def main() -> None:
 
     zero_day_metrics = compute_zero_day_metrics(zero_day_preds, known_preds)
 
+    # E4(a): "unknown-vs-benign detection rate" -- the weaker criterion
+    # (flagged as ANYTHING other than BENIGN, not necessarily the
+    # stricter NEW CLASS sentinel (b) already measures via
+    # zero_day_detection_rate above). See compute_unknown_vs_benign_detection_rate's
+    # docstring for why these two are genuinely different, not duplicates.
+    benign_label_index = label_to_index.get("BENIGN")
+    if benign_label_index is not None and len(zero_day_preds):
+        unknown_vs_benign = compute_unknown_vs_benign_detection_rate(zero_day_preds, benign_label_index)
+    else:
+        unknown_vs_benign = {"num_zero_day_samples": len(zero_day_preds), "unknown_vs_benign_detection_rate": float("nan")}
+
     summary = {
         "run_name": run_name,
         "personalized_run_name": personalized_run_name,
@@ -254,6 +272,7 @@ def main() -> None:
         "missing_classes": sorted(index_to_label[c] for c in missing_classes),
         "per_client_report": {str(k): v for k, v in per_client_report.items()},
         "zero_day_metrics": zero_day_metrics,
+        "unknown_vs_benign_detection": unknown_vs_benign,
         "per_zero_day_label_detection": per_zero_day_label,
         "num_known_test_sequences": int(len(z_known)),
     }
@@ -265,6 +284,7 @@ def main() -> None:
     print(f"  pool={len(pool)}/{num_clients_configured} classes_with_prototypes={len(aggregated)}/{num_classes} threshold={threshold:.4f}")
     print(f"  zero-day detection_rate={zero_day_metrics['zero_day_detection_rate']:.4f} "
           f"false_positive_rate={zero_day_metrics['false_positive_rate']:.4f} f1={zero_day_metrics['f1']:.4f}")
+    print(f"  unknown-vs-benign detection_rate={unknown_vs_benign['unknown_vs_benign_detection_rate']:.4f}")
     for label, stats in per_zero_day_label.items():
         print(f"    {label}: n={stats['num_sequences']} detection_rate={stats['detection_rate']:.4f}")
     print(f"  results: {results_path}")

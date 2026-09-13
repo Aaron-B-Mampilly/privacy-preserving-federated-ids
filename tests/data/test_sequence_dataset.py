@@ -311,3 +311,15 @@ def test_labeled_sequence_index_dataset_drops_unknown_labels(seq_dir):
     )
     assert len(dataset) == 0
     assert len(val_ds) == 0  # consistent with SequenceDataset's own filtering
+
+
+def test_labeled_sequence_index_dataset_handles_already_empty_input():
+    # A genuinely EMPTY input (zero rows to begin with, e.g. a client with
+    # no data on one side of a chronological cutoff) is a different case
+    # from "some rows present but all filtered out" above: np.array([])
+    # on an empty Python list defaults to float64, which then fails as a
+    # boolean mask -- a real bug found via a real N-BaIoT drift-retrain run.
+    dataset = LabeledSequenceIndexDataset(
+        "unused", np.array([], dtype=np.int64), np.array([], dtype=object), {"BENIGN": 0},
+    )
+    assert len(dataset) == 0
