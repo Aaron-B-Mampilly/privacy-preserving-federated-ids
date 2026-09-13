@@ -43,6 +43,7 @@ from flwr.client import Client, NumPyClient
 from torch.utils.data import DataLoader
 
 from fedpda_ids.models.trainer import evaluate, train_one_epoch
+from fedpda_ids.privacy.dp import clip_update, compute_update
 
 SHARED_PREFIXES = ("encoder.", "decoder.")
 
@@ -120,6 +121,25 @@ class FlowerLSTMClient(NumPyClient):
     docstring. Only meaningful with personalized=False (FedProx is a
     full-model-exchange baseline, evaluated on the same basis as
     vanilla FedAvg, not combined with personalization).
+
+    `dp_clip_norm` (E6's DP+SecAgg+ combined comparator, default None =
+    unchanged behavior): when set, fit() returns this round's CLIPPED
+    UPDATE (shared params after local training minus what this client
+    started the round with, L2-clipped to this FIXED public constant)
+    instead of raw parameters, and reports num_examples=1 regardless of
+    this client's real dataset size. Both changes exist so Flower's
+    SecAgg+ workflow -- which must sum/average client values without
+    ever seeing any individual one -- can be given a value it's safe to
+    combine: a fixed (not per-round-adaptive) clip bound needs no
+    server-side visibility into individual norms, and forcing
+    num_examples=1 for every client makes SecAgg+'s internal per-client
+    weighting ratio identical across clients, so the value it reveals
+    is the plain, UNWEIGHTED mean of clipped deltas -- this project's
+    established uniform client-level DP-FedAvg convention (see
+    src/fedpda_ids/privacy/dp.py's module docstring). Only meaningful
+    with personalized=True (DP protects the shared encoder/decoder
+    only, per dp.py's docstring; the local classifier head never
+    leaves the client and needs no clipping).
     """
 
     def __init__(
@@ -136,6 +156,7 @@ class FlowerLSTMClient(NumPyClient):
         personalized: bool = False,
         head_path: Path | None = None,
         proximal_mu: float = 0.0,
+        dp_clip_norm: float | None = None,
     ):
         self.client_id = client_id
         self.model = model
@@ -149,10 +170,13 @@ class FlowerLSTMClient(NumPyClient):
         self.personalized = personalized
         self.head_path = head_path
         self.proximal_mu = proximal_mu
+        self.dp_clip_norm = dp_clip_norm
 
         if self.personalized:
             assert self.head_path is not None, "personalized=True requires head_path"
             load_local_head(self.model, self.head_path)
+        if self.dp_clip_norm is not None:
+            assert self.personalized, "dp_clip_norm requires personalized=True (DP protects shared params only)"
 
     def get_parameters(self, config) -> list[np.ndarray]:
         if self.personalized:
@@ -164,6 +188,12 @@ class FlowerLSTMClient(NumPyClient):
             set_shared_parameters(self.model, parameters)
         else:
             set_model_parameters(self.model, parameters)
+
+        # dp_clip_norm mode needs the round's STARTING shared params to
+        # compute this client's update after training -- `parameters` is
+        # exactly that (the values just loaded above, before any local
+        # training touches them), so no extra model round-trip is needed.
+        round_start_shared_params = parameters if self.dp_clip_norm is not None else None
 
         global_params = (
             [p.detach().clone() for p in self.model.parameters()] if self.proximal_mu > 0.0 else None
@@ -184,6 +214,12 @@ class FlowerLSTMClient(NumPyClient):
             returned_params = get_model_parameters(self.model)
 
         num_examples = len(self.train_loader.dataset)
+
+        if self.dp_clip_norm is not None:
+            update = compute_update(returned_params, round_start_shared_params)
+            returned_params = clip_update(update, self.dp_clip_norm)
+            num_examples = 1  # forces SecAgg+'s per-client weighting ratio to be identical for every client
+
         return returned_params, num_examples, {"train_loss": last_metrics.get("loss", float("nan"))}
 
     def evaluate(self, parameters: list[np.ndarray], config) -> tuple[float, int, dict]:

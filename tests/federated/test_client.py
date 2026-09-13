@@ -2,10 +2,12 @@
 direct method calls, fast and isolated from Flower's process model)."""
 
 import numpy as np
+import pytest
 import torch
 
-from fedpda_ids.federated.client import FlowerLSTMClient, get_model_parameters, set_model_parameters
+from fedpda_ids.federated.client import FlowerLSTMClient, get_model_parameters, get_shared_parameters, set_model_parameters
 from fedpda_ids.models.lstm_autoencoder import LSTMAutoencoderClassifier
+from fedpda_ids.privacy.dp import update_norm
 
 F = 10
 C = 3
@@ -102,3 +104,37 @@ def test_fit_does_not_mutate_input_parameters_list_identity():
 
     for original, copy in zip(params, params_copy):
         assert np.array_equal(original, copy)
+
+
+# TEST (E6's DP+SecAgg+ comparator): dp_clip_norm mode returns a CLIPPED
+# DELTA -- not raw parameters -- with its L2 norm at most clip_norm, and
+# forces num_examples=1 so SecAgg+'s per-client weighting is uniform.
+def test_dp_clip_norm_returns_clipped_delta_within_bound_and_forces_num_examples_1(tmp_path):
+    model = _make_model()
+    initial_params = get_shared_parameters(model)
+    clip_norm = 1e-4  # tiny on purpose -- guarantees the real update norm exceeds it, so clipping is exercised
+
+    client = FlowerLSTMClient(
+        client_id=0, model=model, train_loader=_make_loader(), val_loader=_make_loader(),
+        device=torch.device("cpu"), local_epochs=2, lambda_ce=1.0, learning_rate=1e-2,
+        index_to_label={i: f"class{i}" for i in range(C)},
+        personalized=True, head_path=tmp_path / "head.pt",
+        dp_clip_norm=clip_norm,
+    )
+
+    returned_delta, num_examples, _ = client.fit(initial_params, {})
+
+    assert num_examples == 1
+    assert len(returned_delta) == len(initial_params)
+    assert update_norm(returned_delta) <= clip_norm + 1e-8
+
+
+def test_dp_clip_norm_requires_personalized_true():
+    model = _make_model()
+    with pytest.raises(AssertionError):
+        FlowerLSTMClient(
+            client_id=0, model=model, train_loader=_make_loader(), val_loader=_make_loader(),
+            device=torch.device("cpu"), local_epochs=1, lambda_ce=1.0, learning_rate=1e-3,
+            index_to_label={i: f"class{i}" for i in range(C)},
+            personalized=False, dp_clip_norm=1.0,
+        )

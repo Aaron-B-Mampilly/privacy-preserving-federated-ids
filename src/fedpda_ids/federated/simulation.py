@@ -1087,3 +1087,275 @@ def run_secagg_personalized_simulation(
         "best_checkpoint": str(checkpoint_dir / f"{run_name}_best.pt"),
         "last_checkpoint": str(checkpoint_dir / f"{run_name}_last.pt"),
     }
+
+
+# ---------------------------------------------------------------------
+# E6's "DP + SecAgg+ combined" comparator.
+#
+# Phase 8's DP (DPPersonalizedFedAvg) and Phase 9's SecAgg+ were built as
+# deliberately SEPARATE, incompatible mechanisms: Phase 8's clipping is
+# ADAPTIVE (this round's median of individual client update norms), which
+# requires server-side visibility into each client's own update -- exactly
+# what SecAgg+ exists to prevent. Combining them for E6's Table T6
+# ("Ours+DP+SecAgg") therefore requires a genuinely different clipping
+# policy, not a reuse of either existing one as-is:
+#
+# - Each client clips its own update to a FIXED, PUBLIC constant
+#   (client.py's dp_clip_norm) decided in advance -- no per-round
+#   server-side visibility into individual norms is ever needed, so
+#   SecAgg+'s guarantee (the server sees only the aggregate) is
+#   preserved. clip_bound's default (5.0, see
+#   run_dp_secagg_personalized_simulation) is not an arbitrary guess:
+#   it matches the MEDIAN adaptive clip norm Phase 8's real completed
+#   CICIDS2017 alpha=5/0.5 sweeps actually observed (~5.0-5.5 across
+#   eps in {0.5,1,3,8}, see experiments/results/*_dp_personalized_eps*.json),
+#   so this fixed bound clips client updates about as aggressively as
+#   Phase 8's adaptive mechanism already did in practice.
+# - Clients also report num_examples=1 (not their real dataset size),
+#   which forces SecAgg+'s internal per-client weighting ratio
+#   (num_examples/max_weight) to be IDENTICAL across clients -- so the
+#   value SecAgg+ reveals is the plain, uniform mean of clipped deltas,
+#   matching dp.py's established uniform-weighting convention for
+#   client-level DP-FedAvg (see dp.py's module docstring point 3).
+# - This class then adds ONE Gaussian noise draw to that revealed mean
+#   -- calibrated for an AVERAGE's sensitivity (clip_bound / m), not a
+#   SUM's (Phase 8's DPPersonalizedFedAvg noises the sum, THEN divides
+#   by m) -- and reconstructs the new global parameters by adding the
+#   noised mean delta onto a tracked baseline, exactly like
+#   DPPersonalizedFedAvg's current_global_params.
+# ---------------------------------------------------------------------
+
+
+class DPSecAggPersonalizedFedAvg(PersonalizedCheckpointingFedAvg):
+    """aggregate_fit is called by Flower's DefaultWorkflow AFTER
+    SecAggPlusWorkflow has already summed/quantized/revealed the mean
+    of every sampled client's clipped update -- every entry in `results`
+    carries an IDENTICAL copy of that revealed value (see
+    secaggplus_workflow.py's final `fitres.parameters = parameters` loop
+    over every result), so reading it off any single result is exact,
+    not an approximation."""
+
+    def __init__(self, *args, noise_multiplier: float, clip_bound: float, clients_per_round: int, seed: int, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.noise_multiplier = noise_multiplier
+        self.clip_bound = clip_bound
+        self.clients_per_round = clients_per_round
+        self.rng = np.random.default_rng(seed)
+        self.current_global_params: list[np.ndarray] | None = None
+
+    def initialize_parameters(self, client_manager):
+        parameters = super().initialize_parameters(client_manager)
+        if parameters is not None:
+            self.current_global_params = parameters_to_ndarrays(parameters)
+        return parameters
+
+    def aggregate_fit(self, server_round: int, results, failures):
+        if not results:
+            return None, {}
+        if not self.accept_failures and failures:
+            return None, {}
+
+        mean_clipped_delta = parameters_to_ndarrays(results[0][1].parameters)
+
+        # Sensitivity of a MEAN of m clip_bound-bounded updates is
+        # clip_bound / m (Phase 8's DPPersonalizedFedAvg noises the SUM,
+        # whose sensitivity is clip_bound alone, then divides by m --
+        # here SecAgg+ has already divided by m before we ever see it).
+        noised_mean_delta = add_gaussian_noise(
+            mean_clipped_delta, self.noise_multiplier, self.clip_bound / self.clients_per_round, self.rng,
+        )
+        self.current_global_params = [
+            old + delta for old, delta in zip(self.current_global_params, noised_mean_delta)
+        ]
+
+        metrics_aggregated = {}
+        if self.fit_metrics_aggregation_fn:
+            fit_metrics = [(res.num_examples, res.metrics) for _, res in results]
+            metrics_aggregated = self.fit_metrics_aggregation_fn(fit_metrics)
+
+        return ndarrays_to_parameters(self.current_global_params), metrics_aggregated
+
+
+def run_dp_secagg_personalized_simulation(
+    seq_dir: Path,
+    client_id_col: str,
+    num_clients_configured: int,
+    clients_per_round: int,
+    num_rounds: int,
+    local_epochs: int,
+    batch_size: int,
+    model_cfg: dict,
+    window_size: int,
+    min_train_sequences: int,
+    min_train_classes: int,
+    checkpoint_dir: Path,
+    run_name: str,
+    seed: int,
+    target_epsilon: float,
+    target_delta: float,
+    clip_bound: float = 5.0,
+    num_workers: int = 0,
+    max_cpus_per_client: int = 4,
+    clipping_range: float = 16.0,
+    max_weight: float = 50000.0,
+    modulus_range: int = 2**30,
+) -> dict:
+    """E6's "Ours+DP+SecAgg" comparator: same overall shape as
+    run_secagg_personalized_simulation, except clients clip their own
+    update to a FIXED public `clip_bound` and return num_examples=1 (see
+    client.py's dp_clip_norm docstring), and DPSecAggPersonalizedFedAvg
+    adds calibrated Gaussian noise to SecAgg+'s revealed mean delta
+    instead of the plain PersonalizedCheckpointingFedAvg used by
+    run_secagg_personalized_simulation.
+
+    `clip_bound` (default 5.0): NOT an arbitrary guess -- matches the
+    MEDIAN adaptive clip norm Phase 8's own completed DP sweeps actually
+    observed on CICIDS2017 alpha=5/0.5 (~5.0-5.5 across eps in
+    {0.5,1,3,8}), reused here as the closest available real-data anchor
+    for a policy that (unlike Phase 8) cannot adapt per round.
+
+    target_epsilon=inf means "no DP" (noise_multiplier=0.0) -- clients
+    still clip to clip_bound (a real, if unnoised, part of this
+    mechanism), so this is never identical to plain SecAgg+.
+    """
+    seq_dir = Path(seq_dir)
+
+    global_labels = get_scope_train_labels(seq_dir, client_id_col, None)
+    label_to_index = build_label_index(global_labels)
+    index_to_label = {i: label for label, i in label_to_index.items()}
+    num_classes = len(label_to_index)
+
+    pool = build_trainable_client_pool(seq_dir, client_id_col, num_clients_configured, min_train_sequences, min_train_classes)
+    logger.info("DP+SecAgg+ personalized FL client pool: %d/%d configured clients are trainable", len(pool), num_clients_configured)
+
+    device = torch.device("cpu")
+    lambda_ce = model_cfg["loss"]["lambda_ce"]
+    learning_rate = model_cfg["optimizer"]["learning_rate"]
+
+    centralized_scope = build_scope_dataloaders(seq_dir, client_id_col, None, batch_size, num_workers, False, label_to_index)
+    num_features = next(iter(centralized_scope["loaders"]["train"]))[0].shape[-1]
+    val_loader = centralized_scope["loaders"]["val"]
+
+    checkpoint_dir = Path(checkpoint_dir)
+
+    def client_fn(context: Context):
+        partition_id = int(context.node_config["partition-id"])
+        client_id = pool[partition_id]
+
+        scope = build_scope_dataloaders(
+            seq_dir, client_id_col, client_id, batch_size, num_workers, False, label_to_index,
+        )
+        model = make_model(num_features, num_classes, model_cfg, window_size)
+        client = FlowerLSTMClient(
+            client_id=client_id, model=model,
+            train_loader=scope["loaders"]["train"], val_loader=scope["loaders"]["val"],
+            device=device, local_epochs=local_epochs, lambda_ce=lambda_ce,
+            learning_rate=learning_rate, index_to_label=index_to_label,
+            personalized=True, head_path=local_head_path(checkpoint_dir, run_name, client_id),
+            dp_clip_norm=clip_bound,
+        )
+        return client.to_client()
+
+    client_app = ClientApp(client_fn=client_fn, mods=[secaggplus_mod])
+
+    fraction = clients_per_round / len(pool)
+    sample_rate = fraction
+    noise_multiplier = calibrate_noise_multiplier(target_epsilon, target_delta, sample_rate, num_rounds)
+
+    run_config = {
+        "run_name": run_name, "personalized": True, "dp": True, "secagg_plus": True,
+        "target_epsilon": target_epsilon, "target_delta": target_delta,
+        "noise_multiplier": noise_multiplier, "sample_rate": sample_rate, "clip_bound": clip_bound,
+        "num_clients_configured": num_clients_configured, "num_clients_pool": len(pool),
+        "clients_per_round": clients_per_round, "num_rounds": num_rounds, "local_epochs": local_epochs,
+        "batch_size": batch_size, "seed": seed, "num_features": num_features, "num_classes": num_classes,
+        "label_to_index": label_to_index, "clipping_range": clipping_range, "max_weight": max_weight,
+        "modulus_range": modulus_range,
+    }
+
+    captured: dict = {}
+
+    server_app = ServerApp()
+
+    @server_app.main()
+    def main(driver: Driver, context: Context) -> None:  # noqa: ANN001
+        template_model = make_model(num_features, num_classes, model_cfg, window_size)
+        initial_parameters = ndarrays_to_parameters(get_shared_parameters(template_model))
+
+        def evaluate_fn(server_round: int, parameters, config):
+            model = make_model(num_features, num_classes, model_cfg, window_size)
+            set_shared_parameters(model, parameters)
+            metrics = evaluate(model, val_loader, device, lambda_ce, index_to_label)
+            return metrics["mse"], {"val_mse": metrics["mse"]}
+
+        strategy = DPSecAggPersonalizedFedAvg(
+            fraction_fit=fraction, fraction_evaluate=fraction,
+            min_fit_clients=clients_per_round, min_evaluate_clients=clients_per_round,
+            min_available_clients=len(pool),
+            evaluate_fn=evaluate_fn, initial_parameters=initial_parameters,
+            fit_metrics_aggregation_fn=weighted_average_metrics,
+            evaluate_metrics_aggregation_fn=weighted_average_metrics,
+            checkpoint_dir=checkpoint_dir, run_name=run_name, run_config=run_config, template_model=template_model,
+            noise_multiplier=noise_multiplier, clip_bound=clip_bound, clients_per_round=clients_per_round, seed=seed,
+        )
+
+        legacy_context = LegacyContext(
+            context=context,
+            config=fl.server.ServerConfig(num_rounds=num_rounds),
+            strategy=strategy,
+            client_manager=SimpleClientManager(),
+        )
+        # See run_secagg_personalized_simulation's comment on this exact
+        # pitfall: shares must be sized to clients_per_round (who's
+        # actually sampled), not the full pool.
+        fit_workflow = SecAggPlusWorkflow(
+            num_shares=clients_per_round,
+            reconstruction_threshold=max(1, clients_per_round - 1),
+            max_weight=max_weight,
+            clipping_range=clipping_range,
+            modulus_range=modulus_range,
+        )
+        workflow = DefaultWorkflow(fit_workflow=fit_workflow)
+        workflow(driver, legacy_context)
+
+        captured["history"] = legacy_context.history
+        captured["best_round"] = strategy.best_round
+        captured["best_val_mse"] = strategy.best_val_mse
+
+    run_simulation(
+        server_app=server_app,
+        client_app=client_app,
+        num_supernodes=len(pool),
+        backend_config={"client_resources": {"num_cpus": max_cpus_per_client, "num_gpus": 0.0}},
+    )
+
+    history = captured["history"]
+
+    achieved_epsilon = compute_achieved_epsilon(noise_multiplier, sample_rate, num_rounds, target_delta)
+
+    # checkpoint_suffix="last": same DP-noise-corrupts-round-0-comparison
+    # reasoning as run_dp_personalized_simulation's docstring.
+    per_client_test_metrics, per_client_summary = evaluate_personalized_pool(
+        pool=pool, seq_dir=seq_dir, client_id_col=client_id_col, checkpoint_dir=checkpoint_dir, run_name=run_name,
+        num_features=num_features, num_classes=num_classes, model_cfg=model_cfg, window_size=window_size,
+        batch_size=batch_size, num_workers=num_workers, label_to_index=label_to_index, index_to_label=index_to_label,
+        lambda_ce=lambda_ce, device=device, checkpoint_suffix="last",
+    )
+
+    return {
+        "history_losses_centralized": history.losses_centralized,
+        "history_metrics_centralized": history.metrics_centralized,
+        "history_losses_distributed": history.losses_distributed,
+        "history_metrics_distributed_fit": history.metrics_distributed_fit,
+        "history_metrics_distributed": history.metrics_distributed,
+        "best_round": captured["best_round"],
+        "best_val_mse": captured["best_val_mse"],
+        "achieved_epsilon": achieved_epsilon,
+        "per_client_evaluation_checkpoint": "last",
+        "per_client_test_metrics": per_client_test_metrics,
+        "per_client_summary": per_client_summary,
+        "run_config": run_config,
+        "pool": pool,
+        "best_checkpoint": str(checkpoint_dir / f"{run_name}_best.pt"),
+        "last_checkpoint": str(checkpoint_dir / f"{run_name}_last.pt"),
+    }
