@@ -209,25 +209,19 @@ def build_e1(config: dict) -> dict:
                 "mb_per_round": mb_per_round(full_checkpoint_param_arrays(f"{dataset}_{scope_desc}_fedavg"), clients_per_round),
             }
 
-        # FedProx (cicids alpha=5 only, per E1's single representative scope for this comparator)
-        if dataset == "cicids2017":
-            fedprox = load_json(f"{dataset}_{scope_desc}_fedprox_mu0.01_full") or load_json(f"{dataset}_{scope_desc}_fedprox_mu0.01_smoketest")
-            fedprox_name = f"{dataset}_{scope_desc}_fedprox_mu0.01_full" if load_json(f"{dataset}_{scope_desc}_fedprox_mu0.01_full") else f"{dataset}_{scope_desc}_fedprox_mu0.01_smoketest"
-            if fedprox is None:
-                row["fedprox"] = pending("FedProx run not found")
-            else:
-                is_smoketest = "smoketest" in fedprox_name
-                row["fedprox"] = {
-                    **summarize_single(fedprox["test_metrics"], rare_labels),
-                    "rounds_to_convergence": fedprox.get("best_round"),
-                    "mb_per_round": mb_per_round(full_checkpoint_param_arrays(fedprox_name), clients_per_round),
-                    "note": "SMOKETEST (few rounds) -- not yet the full 100-round run" if is_smoketest else None,
-                }
+        # FedProx (both E1 representative scopes -- run for whichever scopes exist)
+        fedprox = load_json(f"{dataset}_{scope_desc}_fedprox_mu0.01_full") or load_json(f"{dataset}_{scope_desc}_fedprox_mu0.01_smoketest")
+        if fedprox is None:
+            row["fedprox"] = pending("FedProx run not found for this scope")
         else:
-            row["fedprox"] = pending(
-                "not run for this scope -- cost-scoping decision (mirrors Phase 12's own precedent of "
-                "restricting expensive comparators to one representative scope), not a spec exemption"
-            )
+            fedprox_name = f"{dataset}_{scope_desc}_fedprox_mu0.01_full" if load_json(f"{dataset}_{scope_desc}_fedprox_mu0.01_full") else f"{dataset}_{scope_desc}_fedprox_mu0.01_smoketest"
+            is_smoketest = "smoketest" in fedprox_name
+            row["fedprox"] = {
+                **summarize_single(fedprox["test_metrics"], rare_labels),
+                "rounds_to_convergence": fedprox.get("best_round"),
+                "mb_per_round": mb_per_round(full_checkpoint_param_arrays(fedprox_name), clients_per_round),
+                "note": "SMOKETEST (few rounds) -- not yet the full 100-round run" if is_smoketest else None,
+            }
 
         # Base-paper replication
         bpr_name_full = f"{dataset}_{scope_desc}_base_paper_replication_full"
@@ -456,7 +450,14 @@ def build_e6() -> dict:
         gi_results = []
         i = 0
         while True:
-            r = load_json(f"gradient_inversion_{dataset}_{scope_desc}_client{i}") or load_json(f"gradient_inversion_{dataset}_{scope_desc}_client{i}_smoketest")
+            # Prefer the "secaggfull" tag (attacked against the FULL,
+            # non-smoketest DP+SecAgg checkpoint) when it exists for this
+            # client -- falls back to the untagged/smoketest-based run
+            # only for a client that was never re-attacked against the
+            # full checkpoint.
+            r = load_json(f"gradient_inversion_{dataset}_{scope_desc}_client{i}_secaggfull") \
+                or load_json(f"gradient_inversion_{dataset}_{scope_desc}_client{i}") \
+                or load_json(f"gradient_inversion_{dataset}_{scope_desc}_client{i}_smoketest")
             if r is not None:
                 gi_results.append(r)
             i += 1
@@ -544,12 +545,14 @@ def build_t7(config: dict) -> dict:
         "note": "SMOKETEST (only 3 rounds)" if secagg is not None and "smoketest" in secagg_used_name else None,
     })
 
-    drift_row_name = f"{dataset}_{scope_desc}_dp_secagg_personalized_eps3.0_drift_retrain"
+    drift_row_name = f"{dataset}_{scope_desc}_drift_retrain_dp_secagg"
     drift_retrained = load_json(drift_row_name)
     proto_drift = load_json(f"{dataset}_{scope_desc}_prototypes_t7_drift")
     if drift_retrained is not None:
         macro_f1_entry = drift_retrained["f1_after_triggered_retraining_with_monitor"]
-        rare_entry = pending("rare-class recall needs per-client breakdown from the drift-retrain run's per_client field")
+        after_pc = drift_retrained.get("per_client", {}).get("after_triggered_retraining", {})
+        retrained_metrics = [m for m in after_pc.values() if isinstance(m, dict) and "status" not in m]
+        rare_entry = mean_std([rare_recall_from_metrics(m, rare_labels) for m in retrained_metrics]) if retrained_metrics else pending("no clients had retrain data")
     else:
         macro_f1_entry = pending("T7's drift-monitor retrain (starting from the DP+SecAgg checkpoint) not run yet")
         rare_entry = pending("same")
