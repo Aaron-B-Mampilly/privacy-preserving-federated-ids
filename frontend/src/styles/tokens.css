@@ -1,0 +1,117 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Palette ported from the project's published results artifact. Values
+ * are space-separated RGB triples so Tailwind's <alpha-value> syntax
+ * works (bg-accent/10 etc.).
+ */
+:root {
+  --bg: 245 246 248;
+  --surface: 255 255 255;
+  --surface-alt: 238 241 244;
+  --ink: 22 27 38;
+  --ink-muted: 92 100 120;
+  --border: 221 225 232;
+
+  --accent: 13 109 103;
+  --accent-strong: 10 79 75;
+  --accent-soft: 226 242 240;
+
+  --finding: 163 78 14;
+  --finding-soft: 251 236 223;
+  --caveat: 138 59 82;
+  --caveat-soft: 248 233 238;
+  --good: 26 122 76;
+  --good-soft: 228 243 234;
+  --danger: 176 42 42;
+  --danger-soft: 251 232 232;
+
+  --shadow-card: 0 1px 2px rgb(22 27 38 / 0.04), 0 4px 16px rgb(22 27 38 / 0.05);
+  --shadow-lift: 0 2px 6px rgb(22 27 38 / 0.06), 0 12px 32px rgb(22 27 38 / 0.08);
+
+  color-scheme: light;
+}
+
+.dark {
+  --bg: 13 17 23;
+  --surface: 20 26 35;
+  --surface-alt: 26 33 44;
+  --ink: 231 234 240;
+  --ink-muted: 151 161 181;
+  --border: 41 50 63;
+
+  --accent: 79 209 197;
+  --accent-strong: 139 238 226;
+  --accent-soft: 16 48 45;
+
+  --finding: 240 168 96;
+  --finding-soft: 44 32 19;
+  --caveat: 227 154 179;
+  --caveat-soft: 42 24 32;
+  --good: 86 214 154;
+  --good-soft: 18 41 29;
+  --danger: 240 130 130;
+  --danger-soft: 43 23 23;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 20px rgb(0 0 0 / 0.35);
+  --shadow-lift: 0 2px 8px rgb(0 0 0 / 0.4), 0 16px 40px rgb(0 0 0 / 0.45);
+
+  color-scheme: dark;
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    @apply bg-bg text-ink font-sans;
+    margin: 0;
+  }
+
+  h1, h2, h3, h4 {
+    @apply font-display font-semibold text-ink;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  /* Digits in tables and metrics must line up column to column. */
+  .tabular, th, td {
+    font-variant-numeric: tabular-nums;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent ring-offset-2;
+    --tw-ring-offset-color: rgb(var(--bg));
+  }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border rounded-full;
+    border: 2px solid rgb(var(--bg));
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-surface border border-border rounded-card shadow-card;
+  }
+
+  .metric-value {
+    @apply font-display font-semibold text-accent-strong tabular;
+  }
+
+  .label-caps {
+    @apply text-2xs font-semibold uppercase tracking-wider text-ink-muted;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

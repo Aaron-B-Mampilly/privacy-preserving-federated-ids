@@ -37,6 +37,15 @@ seaborn>=0.12,<0.14
 # --- Monitoring (Phase 13) ---
 prometheus-client>=0.19,<0.21
 
+# --- Web API for the frontend (api/) ---
+# Presentation layer only: serves completed results and runs inference
+# against existing checkpoints. Port 8001, because the Prometheus
+# exporter above already owns 8000 during a training run.
+fastapi>=0.110,<0.116
+uvicorn[standard]>=0.27,<0.31
+python-multipart>=0.0.9,<0.1
+httpx>=0.26,<0.28
+
 # --- Testing ---
 pytest>=7.4,<9.0
 

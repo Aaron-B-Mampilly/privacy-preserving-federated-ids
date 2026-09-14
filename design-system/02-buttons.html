@@ -1,0 +1,45 @@
+<!-- @dsCard group="Actions" -->
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Buttons</title><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root {
+  --bg:#f5f6f8; --surface:#fff; --surface-alt:#eef1f4; --ink:#161b26;
+  --ink-muted:#5c6478; --border:#dde1e8; --accent:#0d6d67; --accent-strong:#0a4f4b;
+  --accent-soft:#e2f2f0; --finding:#a34e0e; --finding-soft:#fbecdf; --caveat:#8a3b52;
+  --caveat-soft:#f8e9ee; --good:#1a7a4c; --good-soft:#e4f3ea; --danger:#b02a2a;
+  --danger-soft:#fbe8e8;
+  --shadow:0 1px 2px rgba(22,27,38,.04), 0 4px 16px rgba(22,27,38,.05);
+}
+* { box-sizing:border-box; }
+body {
+  margin:0; padding:28px; background:var(--bg); color:var(--ink);
+  font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:15px; line-height:1.6;
+}
+h1,h2,h3,h4 { font-family:Fraunces,Georgia,serif; font-weight:600; margin:0; }
+.mono,code,td,th,.num { font-family:'IBM Plex Mono',monospace; font-variant-numeric:tabular-nums; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:10px;
+        box-shadow:var(--shadow); padding:20px; }
+.label-caps { font-size:11px; font-weight:600; text-transform:uppercase;
+              letter-spacing:.06em; color:var(--ink-muted); }
+.row { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-start; }
+.grid { display:grid; gap:12px; }
+.spec { margin-top:10px; font-size:12px; color:var(--ink-muted); }
+section { margin-bottom:26px; }
+</style></head>
+<body>
+<h2>Buttons</h2>
+<section><div class="row">
+  <button style="background:var(--accent);color:#fff;border:1px solid transparent;border-radius:6px;
+    padding:6px 12px;font:500 14px 'IBM Plex Sans';cursor:pointer">Primary</button>
+  <button style="background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:6px;
+    padding:6px 12px;font:500 14px 'IBM Plex Sans';cursor:pointer">Secondary</button>
+  <button style="background:transparent;color:var(--ink);border:1px solid transparent;border-radius:6px;
+    padding:6px 12px;font:500 14px 'IBM Plex Sans';cursor:pointer">Ghost</button>
+  <button disabled style="background:var(--accent);opacity:.5;color:#fff;border:1px solid transparent;
+    border-radius:6px;padding:6px 12px;font:500 14px 'IBM Plex Sans'">Disabled</button>
+</div>
+<p class="spec">6px radius, 1px border on every variant so they share one silhouette.
+Primary is reserved for the single main action on a screen (e.g. Analyze Traffic, Trigger retrain).</p>
+</section></body></html>

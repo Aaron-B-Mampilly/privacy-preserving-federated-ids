@@ -1,0 +1,65 @@
+<!-- @dsCard group="Cards" -->
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cards & stat tiles</title><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root {
+  --bg:#f5f6f8; --surface:#fff; --surface-alt:#eef1f4; --ink:#161b26;
+  --ink-muted:#5c6478; --border:#dde1e8; --accent:#0d6d67; --accent-strong:#0a4f4b;
+  --accent-soft:#e2f2f0; --finding:#a34e0e; --finding-soft:#fbecdf; --caveat:#8a3b52;
+  --caveat-soft:#f8e9ee; --good:#1a7a4c; --good-soft:#e4f3ea; --danger:#b02a2a;
+  --danger-soft:#fbe8e8;
+  --shadow:0 1px 2px rgba(22,27,38,.04), 0 4px 16px rgba(22,27,38,.05);
+}
+* { box-sizing:border-box; }
+body {
+  margin:0; padding:28px; background:var(--bg); color:var(--ink);
+  font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:15px; line-height:1.6;
+}
+h1,h2,h3,h4 { font-family:Fraunces,Georgia,serif; font-weight:600; margin:0; }
+.mono,code,td,th,.num { font-family:'IBM Plex Mono',monospace; font-variant-numeric:tabular-nums; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:10px;
+        box-shadow:var(--shadow); padding:20px; }
+.label-caps { font-size:11px; font-weight:600; text-transform:uppercase;
+              letter-spacing:.06em; color:var(--ink-muted); }
+.row { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-start; }
+.grid { display:grid; gap:12px; }
+.spec { margin-top:10px; font-size:12px; color:var(--ink-muted); }
+section { margin-bottom:26px; }
+</style></head>
+<body>
+<h2>Cards &amp; stat tiles</h2>
+<section>
+  <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr))">
+    <div class="card" style="padding:16px">
+      <div class="label-caps">Macro-F1</div>
+      <div style="display:flex;align-items:baseline;gap:8px;margin-top:8px">
+        <span class="num" style="font-family:Fraunces;font-size:26px;font-weight:600;color:var(--accent-strong)">0.0831</span>
+        <span class="mono" style="font-size:12px;color:var(--ink-muted)">± 0.0001</span>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+        <span style="background:var(--surface-alt);color:var(--ink-muted);border-radius:4px;
+          padding:1px 7px;font-size:11px;font-weight:600;text-transform:uppercase">stored</span>
+        <span style="font-size:11px;color:var(--ink-muted)">n=40</span>
+      </div>
+    </div>
+    <div class="card" style="padding:16px">
+      <div class="label-caps">Rare-class recall</div>
+      <div style="display:flex;align-items:baseline;gap:8px;margin-top:8px">
+        <span class="num" style="font-family:Fraunces;font-size:26px;font-weight:600;color:var(--accent-strong)">0.0000</span>
+      </div>
+      <div style="margin-top:8px">
+        <span style="background:var(--finding-soft);color:var(--finding);border-radius:4px;
+          padding:1px 7px;font-size:11px;font-weight:600;text-transform:uppercase">derived</span>
+      </div>
+    </div>
+    <div class="card" style="padding:16px">
+      <div class="label-caps">Zero-day detection</div>
+      <div style="margin-top:8px"><span style="font-family:Fraunces;font-size:26px;font-weight:600;color:var(--ink-muted)">—</span></div>
+      <p class="spec" style="margin-top:6px">Not measured for this scope.</p>
+    </div>
+  </div>
+  <p class="spec">A null metric renders as an em-dash with an explicit reason. It is never shown as 0 —
+  fabricating a measured zero would misreport the experiment.</p>
+</section></body></html>

@@ -1,0 +1,50 @@
+<!-- @dsCard group="Forms" -->
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Form controls</title><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root {
+  --bg:#f5f6f8; --surface:#fff; --surface-alt:#eef1f4; --ink:#161b26;
+  --ink-muted:#5c6478; --border:#dde1e8; --accent:#0d6d67; --accent-strong:#0a4f4b;
+  --accent-soft:#e2f2f0; --finding:#a34e0e; --finding-soft:#fbecdf; --caveat:#8a3b52;
+  --caveat-soft:#f8e9ee; --good:#1a7a4c; --good-soft:#e4f3ea; --danger:#b02a2a;
+  --danger-soft:#fbe8e8;
+  --shadow:0 1px 2px rgba(22,27,38,.04), 0 4px 16px rgba(22,27,38,.05);
+}
+* { box-sizing:border-box; }
+body {
+  margin:0; padding:28px; background:var(--bg); color:var(--ink);
+  font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:15px; line-height:1.6;
+}
+h1,h2,h3,h4 { font-family:Fraunces,Georgia,serif; font-weight:600; margin:0; }
+.mono,code,td,th,.num { font-family:'IBM Plex Mono',monospace; font-variant-numeric:tabular-nums; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:10px;
+        box-shadow:var(--shadow); padding:20px; }
+.label-caps { font-size:11px; font-weight:600; text-transform:uppercase;
+              letter-spacing:.06em; color:var(--ink-muted); }
+.row { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-start; }
+.grid { display:grid; gap:12px; }
+.spec { margin-top:10px; font-size:12px; color:var(--ink-muted); }
+section { margin-bottom:26px; }
+</style></head>
+<body>
+<h2>Form controls</h2>
+<section><div class="row" style="align-items:center">
+  <select style="border:1px solid var(--border);background:var(--surface);border-radius:6px;padding:5px 9px;
+    font:500 13px 'IBM Plex Sans';color:var(--ink)"><option>CICIDS2017</option><option>N-BaIoT</option></select>
+  <select class="mono" style="border:1px solid var(--border);background:var(--surface);border-radius:6px;
+    padding:5px 9px;font-size:13px;color:var(--ink)"><option>α = 5</option><option>α = 0.5</option></select>
+  <input placeholder="Filter by class" style="border:1px solid var(--border);background:var(--surface);
+    border-radius:6px;padding:6px 10px;font:400 14px 'IBM Plex Sans';min-width:200px">
+</div>
+<p class="spec">The dataset selector is the only place the active federation is chosen. CICIDS2017 and
+N-BaIoT are never merged, so there is deliberately no "all datasets" option.</p>
+</section>
+<section>
+  <div class="label-caps" style="margin-bottom:8px">File upload</div>
+  <div style="border:1.5px dashed var(--border);border-radius:10px;padding:26px;text-align:center;background:var(--surface)">
+    <div style="font-size:14px;font-weight:500">Drop a preprocessed CSV window</div>
+    <div class="spec" style="margin-top:4px">10 rows × 70 features for CICIDS2017 · validated before inference</div>
+  </div>
+</section></body></html>

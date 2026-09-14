@@ -1,0 +1,48 @@
+<!-- @dsCard group="Foundations" -->
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Colour & type</title><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root {
+  --bg:#f5f6f8; --surface:#fff; --surface-alt:#eef1f4; --ink:#161b26;
+  --ink-muted:#5c6478; --border:#dde1e8; --accent:#0d6d67; --accent-strong:#0a4f4b;
+  --accent-soft:#e2f2f0; --finding:#a34e0e; --finding-soft:#fbecdf; --caveat:#8a3b52;
+  --caveat-soft:#f8e9ee; --good:#1a7a4c; --good-soft:#e4f3ea; --danger:#b02a2a;
+  --danger-soft:#fbe8e8;
+  --shadow:0 1px 2px rgba(22,27,38,.04), 0 4px 16px rgba(22,27,38,.05);
+}
+* { box-sizing:border-box; }
+body {
+  margin:0; padding:28px; background:var(--bg); color:var(--ink);
+  font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:15px; line-height:1.6;
+}
+h1,h2,h3,h4 { font-family:Fraunces,Georgia,serif; font-weight:600; margin:0; }
+.mono,code,td,th,.num { font-family:'IBM Plex Mono',monospace; font-variant-numeric:tabular-nums; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:10px;
+        box-shadow:var(--shadow); padding:20px; }
+.label-caps { font-size:11px; font-weight:600; text-transform:uppercase;
+              letter-spacing:.06em; color:var(--ink-muted); }
+.row { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-start; }
+.grid { display:grid; gap:12px; }
+.spec { margin-top:10px; font-size:12px; color:var(--ink-muted); }
+section { margin-bottom:26px; }
+</style></head>
+<body>
+<h2>Foundations</h2>
+<p class="spec">Palette carried over from the project's published results artifact so the dashboard
+and the thesis write-up read as one system.</p>
+<section>
+  <div class="label-caps" style="margin-bottom:10px">Colour</div>
+  <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr))"><div class="card" style="padding:0;overflow:hidden"><div style="height:56px;background:#0d6d67"></div><div style="padding:10px 12px"><div class="mono" style="font-size:12px">accent</div><div class="mono" style="font-size:11px;color:var(--ink-muted)">#0d6d67</div><div class="spec">Primary actions, active nav, chart series 1</div></div></div><div class="card" style="padding:0;overflow:hidden"><div style="height:56px;background:#0a4f4b"></div><div style="padding:10px 12px"><div class="mono" style="font-size:12px">accent-strong</div><div class="mono" style="font-size:11px;color:var(--ink-muted)">#0a4f4b</div><div class="spec">Metric values, hover state</div></div></div><div class="card" style="padding:0;overflow:hidden"><div style="height:56px;background:#161b26"></div><div style="padding:10px 12px"><div class="mono" style="font-size:12px">ink</div><div class="mono" style="font-size:11px;color:var(--ink-muted)">#161b26</div><div class="spec">Body text</div></div></div><div class="card" style="padding:0;overflow:hidden"><div style="height:56px;background:#5c6478"></div><div style="padding:10px 12px"><div class="mono" style="font-size:12px">ink-muted</div><div class="mono" style="font-size:11px;color:var(--ink-muted)">#5c6478</div><div class="spec">Secondary text, axis labels</div></div></div><div class="card" style="padding:0;overflow:hidden"><div style="height:56px;background:#dde1e8"></div><div style="padding:10px 12px"><div class="mono" style="font-size:12px">border</div><div class="mono" style="font-size:11px;color:var(--ink-muted)">#dde1e8</div><div class="spec">Card and table rules</div></div></div><div class="card" style="padding:0;overflow:hidden"><div style="height:56px;background:#a34e0e"></div><div style="padding:10px 12px"><div class="mono" style="font-size:12px">finding</div><div class="mono" style="font-size:11px;color:var(--ink-muted)">#a34e0e</div><div class="spec">Findings, derived provenance</div></div></div><div class="card" style="padding:0;overflow:hidden"><div style="height:56px;background:#8a3b52"></div><div style="padding:10px 12px"><div class="mono" style="font-size:12px">caveat</div><div class="mono" style="font-size:11px;color:var(--ink-muted)">#8a3b52</div><div class="spec">Caveats, methodology warnings</div></div></div><div class="card" style="padding:0;overflow:hidden"><div style="height:56px;background:#1a7a4c"></div><div style="padding:10px 12px"><div class="mono" style="font-size:12px">good</div><div class="mono" style="font-size:11px;color:var(--ink-muted)">#1a7a4c</div><div class="spec">Healthy status, live provenance</div></div></div><div class="card" style="padding:0;overflow:hidden"><div style="height:56px;background:#b02a2a"></div><div style="padding:10px 12px"><div class="mono" style="font-size:12px">danger</div><div class="mono" style="font-size:11px;color:var(--ink-muted)">#b02a2a</div><div class="spec">Errors, disconnected state</div></div></div></div>
+</section>
+<section>
+  <div class="label-caps" style="margin-bottom:10px">Type</div>
+  <div class="card">
+    <h1 style="font-size:32px">Fraunces · display</h1>
+    <p class="spec">Headings and metric values. Weight 600.</p>
+    <p style="font-size:15px;margin:14px 0 0">IBM Plex Sans · body copy at 15px/1.6 for readable prose.</p>
+    <p class="mono" style="font-size:14px;margin-top:10px">IBM Plex Mono · 0.0831 ± 0.0001 — tabular numerics</p>
+    <p class="spec">Digits use tabular-nums everywhere so table columns align.</p>
+  </div>
+</section></body></html>

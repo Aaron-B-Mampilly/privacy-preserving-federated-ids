@@ -10,3 +10,13 @@ requires-python = ">=3.10,<3.12"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# The FastAPI presentation layer lives at the repo root (api/) rather than
+# under src/, because it is an application on top of the research library
+# rather than part of it. Declaring both roots keeps editors and type
+# checkers able to resolve `api.*` as well as `fedpda_ids.*`.
+[tool.pyright]
+extraPaths = ["src", "."]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
